@@ -72,3 +72,9 @@ English:
 ShellNsManager is a portable Windows Explorer Shell Namespace editor. It lets you add custom folders to This PC or the navigation tree, reorder namespace nodes, hide Home and Quick access, and restore changes through automatic `.reg` backups.
 
 Download the ready package from **Assets**. Do not download `Source code` unless you want to build the project yourself.
+
+## v1.0.1
+
+Исправление: кнопки «Переместить вверх / вниз» не давали видимого результата, когда у узла был скрытый сосед (невидимый HKLM-узел рабочего стола без nav-pin). Перемещение происходило относительно скрытого узла, и в дереве ничего не менялось. Теперь перемещение всегда выполняется относительно ближайшего видимого соседа.
+
+В Assets добавлен отдельный `ShellNsManager.exe` — для тех, кто хочет скачать только исполняемый файл без распаковки архива.

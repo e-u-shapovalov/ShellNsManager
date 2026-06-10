@@ -304,8 +304,13 @@ static void MoveSelected(int dir) {
     std::vector<int> order = SectionOrder(loc);
     int pos = -1;
     for (int k=0;k<(int)order.size();++k) if (order[k]==idx) { pos=k; break; }
+    if (pos < 0) { SetStatus(T(L"Узел уже с краю")); return; }
+    // order содержит и невидимые узлы (скрытые HKLM-узлы Desktop без nav-pin).
+    // Меняемся местами с ближайшим ВИДИМЫМ соседом, иначе своп пришёлся бы
+    // на скрытый узел и в дереве ничего бы не изменилось.
     int np = pos + dir;
-    if (pos < 0 || np < 0 || np >= (int)order.size()) { SetStatus(T(L"Узел уже с краю")); return; }
+    while (np >= 0 && np < (int)order.size() && !IsVisibleTreeNode(order[np])) np += dir;
+    if (np < 0 || np >= (int)order.size()) { SetStatus(T(L"Узел уже с краю")); return; }
     std::swap(order[pos], order[np]);
     std::vector<SortItem> items;
     for (int ni : order) items.push_back({ g_nodes[ni].hive, g_nodes[ni].guid });
@@ -593,7 +598,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             c.dwCommonButtons = TDCBF_OK_BUTTON;
             c.pszWindowTitle = T(L"О программе");
             c.pszMainIcon = TD_INFORMATION_ICON;
-            c.pszMainInstruction = L"Shell Namespace Manager   v1.0";
+            c.pszMainInstruction = L"Shell Namespace Manager   v1.0.1";
             c.pszContent = L"Evgenii Shapovalov\n<a href=\"https://github.com/e-u-shapovalov\">github.com/e-u-shapovalov</a>";
             c.pfCallback = AboutCallback;
             TaskDialogIndirect(&c, nullptr, nullptr, nullptr);
