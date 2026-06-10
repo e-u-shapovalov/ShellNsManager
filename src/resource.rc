@@ -1,0 +1,49 @@
+#include <windows.h>
+#include "resource.h"
+#pragma code_page(65001)
+
+/* RT_MANIFEST=24, CREATEPROCESS_MANIFEST_RESOURCE_ID=1 */
+1 24 "app.manifest"
+
+IDI_APPICON ICON "app.ico"
+
+IDD_ADD DIALOGEX 0, 0, 330, 230
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Добавить свою папку"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "Имя в Проводнике:", -1, 10, 12, 95, 10
+    EDITTEXT        IDC_ADD_NAME, 108, 10, 212, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Папка-цель:", -1, 10, 34, 95, 10
+    EDITTEXT        IDC_ADD_TARGET, 108, 32, 160, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Обзор…", IDC_ADD_TARGET_BROWSE, 272, 32, 48, 14
+
+    LTEXT           "Иконка:", -1, 10, 56, 95, 10
+    EDITTEXT        IDC_ADD_ICON, 108, 54, 130, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Выбрать…", IDC_ADD_ICON_BROWSE, 242, 54, 48, 14
+    CONTROL         "", IDC_ADD_ICON_PREVIEW, "Static", SS_ICON | SS_CENTERIMAGE | WS_CHILD | WS_VISIBLE, 298, 50, 24, 24
+    LTEXT           "Нажмите «Выбрать…»: встроенная иконка Windows или свой файл .ico / .exe / .dll. Хранится ссылка на файл — не удаляйте и не перемещайте его.", -1, 10, 76, 312, 22
+
+    GROUPBOX        "Где показать узел", -1, 10, 102, 310, 36
+    AUTOCHECKBOX    "Этот компьютер", IDC_ADD_LOC_PC, 20, 116, 120, 12
+    AUTOCHECKBOX    "Дерево (рабочий стол)", IDC_ADD_LOC_TREE, 150, 116, 150, 12
+
+    GROUPBOX        "Куда писать в реестр", -1, 10, 144, 310, 48
+    AUTORADIOBUTTON "HKCU — только для текущего пользователя", IDC_ADD_HIVE_HKCU, 20, 158, 290, 12, WS_GROUP
+    AUTORADIOBUTTON "HKLM — для всех пользователей (системно)", IDC_ADD_HIVE_HKLM, 20, 174, 290, 12
+
+    DEFPUSHBUTTON   "Создать", IDOK, 206, 204, 54, 16
+    PUSHBUTTON      "Отмена", IDCANCEL, 266, 204, 54, 16
+END
+
+IDD_HIDE DIALOGEX 0, 0, 320, 200
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Скрыть встроенный элемент из дерева"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "Выберите встроенный элемент Проводника (например, «Панель управления»). Он будет откреплён от дерева навигации (через смену владельца ключа). Доступ по пути сохранится; снять скрытие — реимпортом navtree_before.reg из папки backups.", -1, 10, 8, 300, 36
+    LISTBOX         IDC_HIDE_LIST, 10, 50, 300, 110, LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "Скрыть", IDOK, 200, 176, 54, 16
+    PUSHBUTTON      "Отмена", IDCANCEL, 256, 176, 54, 16
+END

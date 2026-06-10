@@ -1,0 +1,20 @@
+# Build output
+/build/
+*.exe
+*.obj
+*.o
+*.res
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.idb
+*.tlog
+
+# Runtime artifacts (.reg backups)
+/backups/
+
+# Editor / IDE
+.vs/
+.vscode/
+*.user
