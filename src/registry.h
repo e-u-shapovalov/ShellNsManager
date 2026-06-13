@@ -93,6 +93,28 @@ bool RestoreQuickAccessDefaults(std::wstring& backupPath, std::wstring& err);
 bool GetQuickAccessHidden();
 bool SetQuickAccessHidden(bool hidden, std::wstring& backupPath, std::wstring& err);
 
+// Значок рабочего стола (HideDesktopIcons): true = значок сейчас скрыт.
+// guid — CLSID значка в фигурных скобках («Этот компьютер», «Корзина» и т.п.).
+bool GetDesktopIconHidden(const std::wstring& guid);
+// Скрыть/показать значок рабочего стола. Пишет в HKCU\...\HideDesktopIcons\NewStartPanel и
+// ClassicStartMenu (оба режима меню Пуск). Перед записью — .reg-бэкап; без бэкапа правка отменяется.
+bool SetDesktopIconHidden(const std::wstring& guid, bool hidden, std::wstring& backupPath, std::wstring& err);
+
+// Системный узел (Этот компьютер, Корзина) закреплён в дереве навигации?
+// Читает System.IsPinnedToNameSpaceTree из HKCU\Software\Classes\CLSID\{guid}.
+bool GetNavTreePinned(const std::wstring& guid);
+// Закрепить/открепить системный узел в дереве навигации (per-user override на CLSID). Бэкап.
+bool SetNavTreePinned(const std::wstring& guid, bool pinned, std::wstring& backupPath, std::wstring& err);
+
+// Узел-команда {guid} присутствует внутри «Этот компьютер» (HKCU MyComputer\NameSpace)?
+bool GetMyComputerNode(const std::wstring& guid);
+// Добавить узел-команду внутрь «Этот компьютер»: свой CLSID (DefaultIcon + Shell\Open\Command,
+// ShellFolder=не-папка) + запись MyComputer\NameSpace\{guid}. Двойной клик выполняет command. Бэкап.
+bool AddMyComputerCommand(const std::wstring& guid, const std::wstring& name, const std::wstring& iconPath,
+                          const std::wstring& command, std::wstring& backupPath, std::wstring& err);
+// Убрать узел-команду из «Этот компьютер» (удаляет MyComputer\NameSpace\{guid} и нашу CLSID-регистрацию). Бэкап.
+bool RemoveMyComputerNode(const std::wstring& guid, std::wstring& backupPath, std::wstring& err);
+
 // Полностью выключить/включить «Быстрый доступ» (Home): скрыть узел/секцию Quick Access +
 // LaunchTo=1, ShowRecent=0, ShowFrequent=0 (HKCU), чтобы Проводник открывал «Этот компьютер»
 // и не наполнял историю заново.

@@ -17,7 +17,8 @@
 // Заголовок окна с версией и меткой времени сборки (меняется каждую сборку — видно, что версия свежая).
 #define SNM_WIDE2(s) L##s
 #define SNM_WIDE(s)  SNM_WIDE2(s)
-#define SNM_TITLE    L"Shell Namespace Manager   v1.0   (сборка " SNM_WIDE(__DATE__) L" " SNM_WIDE(__TIME__) L")"
+#define SNM_VERSION  L"1.1.0"
+#define SNM_TITLE    L"Shell Namespace Manager   v" SNM_VERSION L"   (сборка " SNM_WIDE(__DATE__) L" " SNM_WIDE(__TIME__) L")"
 
 // Логический узел: объединяет 64- и 32-битную записи одного GUID в одной ветке.
 struct NsNode {
@@ -41,6 +42,12 @@ static std::vector<NsNode>  g_nodes;
 
 static const int kTbY = 8, kTbH = 28, kViewTop = kTbY + kTbH + 8, kMargin = 8, kDetailsH = 74;
 
+// CLSID значков рабочего стола (для флажков показа/скрытия через HideDesktopIcons) и узлов дерева.
+static const wchar_t* kGuidThisPC     = L"{20D04FE0-3AEA-1069-A2D8-08002B30309D}"; // Этот компьютер
+static const wchar_t* kGuidRecycleBin = L"{645FF040-5081-101B-9F08-00AA002F954E}"; // Корзина
+// Свой фиксированный CLSID для узла-команды «Управление дисками» (чтобы флажок его находил).
+static const wchar_t* kGuidDiskMgmt   = L"{874C19C0-3F96-4669-B0DF-CCE51559C7BD}";
+
 // Компактный тулбар — только частые действия (текст/тултип = русский ключ, переводится через T()).
 struct BtnDef { int id; const wchar_t* text; int w; const wchar_t* tip; };
 static const BtnDef kButtons[] = {
@@ -49,6 +56,7 @@ static const BtnDef kButtons[] = {
     { IDC_BTN_DELETE,  L"Удалить",        90,  L"Удалить выбранный узел из namespace (перед удалением — .reg-бэкап)" },
     { IDC_BTN_UP,      L"Вверх",          70,  L"Поднять выбранный узел выше (меняет SortOrderIndex)" },
     { IDC_BTN_DOWN,    L"Вниз",           70,  L"Опустить выбранный узел ниже (меняет SortOrderIndex)" },
+    { IDC_BTN_RESTART, L"Применить",      100, L"Применить изменения: перезапустить Проводник, чтобы они вступили в силу (панель задач на миг исчезнет и вернётся)" },
 };
 
 static void SetStatus(const wchar_t* s) { SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)s); }
@@ -83,15 +91,22 @@ static HMENU BuildMenu() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDC_BTN_QUICKACCESS, T(L"Показывать «Главная»"));
     AppendMenuW(view, MF_STRING, IDC_BTN_CLEARQA,     T(L"Показывать «Быстрый доступ»"));
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(view, MF_STRING, IDM_DESKTOP_PC,  T(L"Показывать «Этот компьютер» на рабочем столе"));
+    AppendMenuW(view, MF_STRING, IDM_DESKTOP_BIN, T(L"Показывать «Корзину» на рабочем столе"));
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(view, MF_STRING, IDM_TREE_PC,   T(L"Показывать «Этот компьютер» в дереве слева"));
+    AppendMenuW(view, MF_STRING, IDM_TREE_BIN,  T(L"Показывать «Корзину» в дереве слева"));
+    AppendMenuW(view, MF_STRING, IDM_TREE_DISK, T(L"Показывать «Управление дисками» в «Этот компьютер»"));
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)view, T(L"Вид"));
 
     HMENU expl = CreatePopupMenu();
-    AppendMenuW(expl, MF_STRING, IDC_BTN_RESTART, T(L"Перезапустить Проводник"));
+    AppendMenuW(expl, MF_STRING, IDC_BTN_RESTART, T(L"Применить (перезапуск Проводника)"));
     AppendMenuW(expl, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(expl, MF_STRING, IDM_RESETQA,   T(L"Очистить «Быстрый доступ»"));
     AppendMenuW(expl, MF_STRING, IDM_QA_DEFAULTS, T(L"Вернуть «Быстрый доступ» по умолчанию"));
     AppendMenuW(expl, MF_STRING, IDM_DISABLEQA, T(L"Выключить «Быстрый доступ» полностью"));
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)expl, T(L"Проводник"));
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)expl, T(L"Действия"));
 
     HMENU lang = CreatePopupMenu();
     AppendMenuW(lang, MF_STRING, IDM_LANG_RU, T(L"Русский"));
@@ -212,9 +227,11 @@ static void Populate() {
     BuildNodes();
     TreeView_DeleteAllItems(g_tree);
     HTREEITEM rPC   = InsertTreeItem(TVI_ROOT, T(L"Этот компьютер"),       -1, (LPARAM)(-1), true);
-    HTREEITEM rTree = InsertTreeItem(TVI_ROOT, T(L"Дерево (рабочий стол)"), -1, (LPARAM)(-1), true);
+    HTREEITEM rTree = InsertTreeItem(TVI_ROOT, T(L"Панель навигации (слева)"), -1, (LPARAM)(-1), true);
     AddChildren(rPC,   NsLocation::MyComputer);
     AddChildren(rTree, NsLocation::Desktop);
+    TreeView_Expand(g_tree, rPC,   TVE_EXPAND); // держим корни раскрытыми — состояние не теряется после операций
+    TreeView_Expand(g_tree, rTree, TVE_EXPAND);
     SetWindowTextW(g_details, L"");
     int visible = 0;
     for (int i = 0; i < (int)g_nodes.size(); ++i) if (IsVisibleTreeNode(i)) ++visible;
@@ -281,6 +298,61 @@ static void RestartExplorer() {
     LaunchExplorer(true);
 }
 
+// Закрепить/открепить системный узел (Этот компьютер, Корзина) в дереве навигации Проводника
+// через System.IsPinnedToNameSpaceTree. В дереве самого приложения это не отражается (это свойство
+// CLSID, а не namespace-запись), поэтому Populate() здесь не нужен.
+static void ToggleNavPin(HWND h, const wchar_t* name, const wchar_t* guid) {
+    bool pinned = GetNavTreePinned(guid);
+    std::wstring backup, err;
+    if (SetNavTreePinned(guid, !pinned, backup, err)) {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+        std::wstring s = L"«" + std::wstring(name) + L"»"
+                       + (pinned ? T(L" — убрано из дерева") : T(L" — добавлено в дерево"))
+                       + T(L". Нажмите «Применить», чтобы увидеть.");
+        SetStatus(s.c_str());
+    } else {
+        MessageBoxW(h, err.c_str(), T(L"Не удалось"), MB_OK|MB_ICONWARNING);
+    }
+}
+
+// Добавить/убрать узел-команду «Управление дисками» внутри «Этот компьютер» (двойной клик запускает оснастку).
+static void ToggleMyComputerLauncher(HWND h, const wchar_t* name, const wchar_t* guid) {
+    bool present = GetMyComputerNode(guid);
+    std::wstring backup, err;
+    bool ok;
+    if (present) {
+        ok = RemoveMyComputerNode(guid, backup, err);
+    } else {
+        std::wstring icon = L"%SystemRoot%\\system32\\imageres.dll,-27";   // значок жёсткого диска
+        std::wstring cmd  = L"%SystemRoot%\\system32\\mmc.exe \"%SystemRoot%\\system32\\diskmgmt.msc\"";
+        ok = AddMyComputerCommand(guid, name, icon, cmd, backup, err);
+    }
+    if (ok) {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+        Populate(); // узел появился/исчез в «Этот компьютер» — перечитать дерево приложения
+        std::wstring s = L"«" + std::wstring(name) + L"»"
+                       + (present ? T(L" — убрано из «Этот компьютер»") : T(L" — добавлено в «Этот компьютер»"))
+                       + T(L". Нажмите «Применить», чтобы увидеть.");
+        SetStatus(s.c_str());
+    } else {
+        MessageBoxW(h, err.c_str(), T(L"Не удалось"), MB_OK|MB_ICONWARNING);
+    }
+}
+
+// Переключить видимость значка рабочего стола (Этот компьютер / Корзина) и показать результат.
+static void ToggleDesktopIcon(HWND h, const wchar_t* guid, const wchar_t* name) {
+    bool hide = !GetDesktopIconHidden(guid);
+    std::wstring backup, err;
+    if (SetDesktopIconHidden(guid, hide, backup, err)) {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+        std::wstring s = std::wstring(name) + (hide ? T(L" — значок скрыт с рабочего стола")
+                                                    : T(L" — значок показан на рабочем столе"));
+        SetStatus(s.c_str());
+    } else {
+        MessageBoxW(h, err.c_str(), T(L"Не удалось"), MB_OK|MB_ICONWARNING);
+    }
+}
+
 static void SelectNodeByGuid(NsLocation loc, const std::wstring& guid) {
     int want = -1;
     for (int i=0;i<(int)g_nodes.size();++i)
@@ -320,7 +392,7 @@ static void MoveSelected(int dir) {
         Populate();
         SelectNodeByGuid(loc, guid);
         if (!err.empty()) MessageBoxW(g_tree, err.c_str(), T(L"Внимание: права ключа не восстановлены"), MB_OK|MB_ICONWARNING);
-        SetStatus(T(L"Порядок изменён. Нажмите «Перезапустить Проводник», чтобы увидеть результат в дереве."));
+        SetStatus(T(L"Порядок изменён. Нажмите «Применить», чтобы увидеть результат."));
     } else {
         MessageBoxW(g_tree, err.c_str(), T(L"Не удалось изменить порядок"), MB_OK|MB_ICONWARNING);
     }
@@ -402,6 +474,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         CheckMenuItem(mp, IDC_BTN_QUICKACCESS, MF_BYCOMMAND | (GetHomeHidden()        ? MF_UNCHECKED : MF_CHECKED));
         CheckMenuItem(mp, IDC_BTN_CLEARQA,     MF_BYCOMMAND | (GetQuickAccessHidden() ? MF_UNCHECKED : MF_CHECKED));
         CheckMenuItem(mp, IDM_DISABLEQA,       MF_BYCOMMAND | (GetQuickAccessDisabled() ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(mp, IDM_DESKTOP_PC,      MF_BYCOMMAND | (GetDesktopIconHidden(kGuidThisPC)     ? MF_UNCHECKED : MF_CHECKED));
+        CheckMenuItem(mp, IDM_DESKTOP_BIN,     MF_BYCOMMAND | (GetDesktopIconHidden(kGuidRecycleBin) ? MF_UNCHECKED : MF_CHECKED));
+        CheckMenuItem(mp, IDM_TREE_PC,         MF_BYCOMMAND | (GetNavTreePinned(kGuidThisPC)     ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(mp, IDM_TREE_BIN,        MF_BYCOMMAND | (GetNavTreePinned(kGuidRecycleBin) ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(mp, IDM_TREE_DISK,       MF_BYCOMMAND | (GetMyComputerNode(kGuidDiskMgmt)  ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuRadioItem(mp, IDM_LANG_RU, IDM_LANG_EN, (LocGetLang()==0 ? IDM_LANG_RU : IDM_LANG_EN), MF_BYCOMMAND);
         return 0;
     }
@@ -444,7 +521,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (ShowHideDialog(h, name)) {
                 SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
                 Populate();
-                std::wstring s = T(L"Скрыто: ") + name + T(L"  — нажмите «Перезапустить Проводник»");
+                std::wstring s = T(L"Скрыто: ") + name + T(L"  — нажмите «Применить»");
                 SetStatus(s.c_str());
             }
             break;
@@ -476,8 +553,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             bool now = !GetNavAllFolders();
             if (SetNavAllFolders(now)) {
                 SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-                SetStatus(now ? T(L"Полный вид папок — перезапустите Проводник")
-                              : T(L"Упрощённый вид папок — перезапустите Проводник"));
+                SetStatus(now ? T(L"Полный вид папок — нажмите «Применить»")
+                              : T(L"Упрощённый вид папок — нажмите «Применить»"));
             } else {
                 SetStatus(T(L"Не удалось: бэкап не создан"));
             }
@@ -492,8 +569,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 SetHubMode(hide);
                 SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
                 if (!e2.empty()) MessageBoxW(h, e2.c_str(), T(L"Внимание: права ключа не восстановлены"), MB_OK|MB_ICONWARNING);
-                SetStatus(hide ? T(L"«Главная» скрыта — перезапустите Проводник")
-                               : T(L"«Главная» восстановлена — перезапустите Проводник"));
+                SetStatus(hide ? T(L"«Главная» скрыта — нажмите «Применить»")
+                               : T(L"«Главная» восстановлена — нажмите «Применить»"));
             } else {
                 MessageBoxW(h, e.c_str(), T(L"Не удалось"), MB_OK|MB_ICONWARNING);
             }
@@ -512,11 +589,26 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             break;
         }
+        case IDM_DESKTOP_PC:
+            ToggleDesktopIcon(h, kGuidThisPC, T(L"«Этот компьютер»"));
+            break;
+        case IDM_DESKTOP_BIN:
+            ToggleDesktopIcon(h, kGuidRecycleBin, T(L"«Корзина»"));
+            break;
+        case IDM_TREE_PC:
+            ToggleNavPin(h, T(L"Этот компьютер"), kGuidThisPC);
+            break;
+        case IDM_TREE_BIN:
+            ToggleNavPin(h, T(L"Корзина"), kGuidRecycleBin);
+            break;
+        case IDM_TREE_DISK:
+            ToggleMyComputerLauncher(h, T(L"Управление дисками"), kGuidDiskMgmt);
+            break;
         case IDC_BTN_RESTART:
-            if (MessageBoxW(h, T(L"Перезапустить Проводник? Панель задач на мгновение исчезнет и вернётся."),
-                            T(L"Подтверждение"), MB_YESNO|MB_ICONQUESTION) == IDYES) {
+            if (MessageBoxW(h, T(L"Применить изменения? Проводник перезапустится: панель задач на мгновение исчезнет и вернётся."),
+                            T(L"Применение изменений"), MB_YESNO|MB_ICONQUESTION) == IDYES) {
                 RestartExplorer();
-                SetStatus(T(L"Проводник перезапущен"));
+                SetStatus(T(L"Изменения применены"));
             }
             break;
         case IDM_RESETQA:
@@ -598,8 +690,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             c.dwCommonButtons = TDCBF_OK_BUTTON;
             c.pszWindowTitle = T(L"О программе");
             c.pszMainIcon = TD_INFORMATION_ICON;
-            c.pszMainInstruction = L"Shell Namespace Manager   v1.0.1";
-            c.pszContent = L"Evgenii Shapovalov\n<a href=\"https://github.com/e-u-shapovalov\">github.com/e-u-shapovalov</a>";
+            c.pszMainInstruction = L"Shell Namespace Manager   v" SNM_VERSION;
+            c.pszContent = L"Evgenii Shapovalov\n<a href=\"https://github.com/e-u-shapovalov/ShellNsManager\">github.com/e-u-shapovalov/ShellNsManager</a>";
             c.pfCallback = AboutCallback;
             TaskDialogIndirect(&c, nullptr, nullptr, nullptr);
             break;
@@ -607,6 +699,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     case WM_DESTROY:
+        // отвязать image list от дерева до Release: дерево держит слабую ссылку (без AddRef)
+        if (g_tree) TreeView_SetImageList(g_tree, nullptr, TVSIL_NORMAL);
         if (g_iml)  { g_iml->Release(); g_iml = nullptr; }
         if (g_font) { DeleteObject(g_font); g_font = nullptr; }
         PostQuitMessage(0);

@@ -22,6 +22,11 @@
 #define IDM_RESETQA         1103
 #define IDM_DISABLEQA       1104
 #define IDM_QA_DEFAULTS     1105
+#define IDM_DESKTOP_PC      1106
+#define IDM_DESKTOP_BIN     1107
+#define IDM_TREE_PC         1108
+#define IDM_TREE_BIN        1109
+#define IDM_TREE_DISK       1110
 
 /* Диалог «Добавить свою папку» */
 #define IDD_ADD                2000

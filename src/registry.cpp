@@ -186,8 +186,10 @@ static std::wstring MakeBackupDir() {
     size_t p = dir.find_last_of(L"\\/");
     if (p != std::wstring::npos) dir.resize(p + 1);
     SYSTEMTIME st; GetLocalTime(&st);
-    wchar_t ts[32];
-    swprintf_s(ts, L"%04d%02d%02d-%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    // Миллисекунды в имени каталога: иначе две операции в одну и ту же секунду попали бы в один
+    // каталог и второй .reg-бэкап молча затёр бы первый (потеря точки восстановления).
+    wchar_t ts[40];
+    swprintf_s(ts, L"%04d%02d%02d-%02d%02d%02d-%03d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
     std::wstring base = dir + L"backups";
     CreateDirectoryW(base.c_str(), nullptr);
     std::wstring full = base + L"\\" + ts;
@@ -600,7 +602,12 @@ bool SetSortOrder(const std::vector<SortItem>& items, std::wstring& backupPath, 
             }
         }
     }
-    if (!ok) { err = L"Не все узлы удалось записать (смена владельца не прошла?)."; return false; }
+    if (!ok) {
+        err = L"Не все узлы удалось записать (смена владельца не прошла?).";
+        if (!aclWarn.empty()) // не терять предупреждение про уже записанные ключи с невосстановленными правами
+            err += L"\n\nКроме того, у части записанных узлов не восстановлены исходные права/владельца:\n" + aclWarn;
+        return false;
+    }
     if (!aclWarn.empty())
         err = L"Порядок применён, но у части ключей не удалось восстановить исходные права/владельца. "
               L"Не повторяйте операцию; проверьте ACL вручную:\n" + aclWarn;
@@ -680,13 +687,15 @@ bool SetNavTreeHidden(const std::wstring& guid, bool hidden, std::wstring& backu
     EnablePriv(SE_RESTORE_NAME);
     DWORD val = hidden ? 0u : 1u;
     ProtWrite r = WriteProtectedDword(sub, L"System.IsPinnedToNameSpaceTree", val); // HKLM (смена владельца) — его читает Проводник
+    // Если строгая HKLM-запись не прошла — выходим до HKCU-зеркала: его Проводник видит через
+    // HKCR-merge, и записывать его при отказе значило бы оставить тихое частичное состояние.
+    if (r == ProtWrite::NotWrote) { err = L"Не удалось записать (смена владельца не прошла?)."; return false; }
     WriteDw(HKEY_CURRENT_USER, sub, L"System.IsPinnedToNameSpaceTree", val);        // HKCU заодно
-    
+
     // 32-бит зеркало — best-effort, только для уже существующего ключа (он зафиксирован в бэкапе выше).
     ProtWrite rw = wowExists ? WriteProtectedDword(wowSub, L"System.IsPinnedToNameSpaceTree", val)
                              : ProtWrite::NotWrote;
 
-    if (r == ProtWrite::NotWrote) { err = L"Не удалось записать (смена владельца не прошла?)."; return false; }
     if (r == ProtWrite::WroteNotRestored || rw == ProtWrite::WroteNotRestored) {
         err = L"Изменение применено, но восстановить исходные права/владельца ключа не удалось. "
               L"Не повторяйте операцию; проверьте ACL вручную:\n  HKLM\\" + sub;
@@ -716,7 +725,10 @@ static bool CreateKeyForced(HKEY root, const std::wstring& parentSub, const std:
             EXPLICIT_ACCESSW ea{};
             ea.grfAccessPermissions = KEY_WRITE | KEY_CREATE_SUB_KEY;
             ea.grfAccessMode        = SET_ACCESS;
-            ea.grfInheritance       = CONTAINER_INHERIT_ACE;
+            // NO_INHERITANCE: доступ нужен только самому родителю (создать подключ), наследовать
+            // временный admins-ACE в создаваемый дочерний ключ нельзя — он бы там и остался,
+            // ослабив защиту системной ветки после восстановления DACL родителя.
+            ea.grfInheritance       = NO_INHERITANCE;
             ea.Trustee.TrusteeForm  = TRUSTEE_IS_SID;
             ea.Trustee.TrusteeType  = TRUSTEE_IS_GROUP;
             ea.Trustee.ptstrName    = (LPWSTR)admins;
@@ -1033,12 +1045,16 @@ bool SetQuickAccessDisabled(bool disable, std::wstring& backupPath, std::wstring
         err = L"Не удалось сохранить бэкап disable_qa_before.reg — операция отменена."; return false;
     }
 
+    // Бэкап home-delegate — ДО первой записи: SetQuickAccessHiddenCore ниже уже пишет в реестр,
+    // и если экспорт home-delegate не удастся после него, мы вернули бы отказ с частично
+    // применённым состоянием. Собираем все бэкапы перед любыми изменениями.
+    if (!BackupQuickAccessHomeDelegate(backupPath, err)) return false;
+
     std::wstring e2;
     if (!SetQuickAccessHiddenCore(disable, backupPath, e2)) {
         err = e2.empty() ? L"Не удалось изменить видимость «Быстрого доступа»." : e2;
         return false;
     }
-    if (!BackupQuickAccessHomeDelegate(backupPath, err)) return false;
     if (!SetQuickAccessHomeDelegateVisible(!disable, err)) return false;
 
     // HKCU — личные настройки пользователя, без смены владельца.
@@ -1052,5 +1068,121 @@ bool SetQuickAccessDisabled(bool disable, std::wstring& backupPath, std::wstring
     }
 
     if (!e2.empty()) err = e2; // пробросить предупреждение про ACL, если возникло
+    return true;
+}
+
+// Значки рабочего стола: HKCU\...\Explorer\HideDesktopIcons\{NewStartPanel,ClassicStartMenu}.
+// Значение-DWORD, имя = CLSID значка: 1 = скрыт, 0/нет = показан. NewStartPanel читает современное
+// меню «Пуск», ClassicStartMenu — классическое; пишем в оба, чтобы значок вёл себя одинаково.
+static const wchar_t* kHideIconsNew =
+    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel";
+static const wchar_t* kHideIconsClassic =
+    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\ClassicStartMenu";
+
+bool GetDesktopIconHidden(const std::wstring& guid) {
+    DWORD v = 0;
+    RegReadDword(HKEY_CURRENT_USER, kHideIconsNew, guid.c_str(), v);
+    return v != 0;
+}
+
+bool SetDesktopIconHidden(const std::wstring& guid, bool hidden, std::wstring& backupPath, std::wstring& err) {
+    backupPath = MakeBackupDir();
+    std::wstring reg = L"Windows Registry Editor Version 5.00\r\n\r\n"
+                     + RegDwordBackupLine(L"HKEY_CURRENT_USER", kHideIconsNew,     guid.c_str(), HKEY_CURRENT_USER)
+                     + RegDwordBackupLine(L"HKEY_CURRENT_USER", kHideIconsClassic, guid.c_str(), HKEY_CURRENT_USER);
+    if (!SaveTextFileUtf16(backupPath + L"desktopicons_before.reg", reg)) {
+        err = L"Не удалось сохранить бэкап — изменение отменено.";
+        return false; // нет бэкапа — не пишем
+    }
+    DWORD v = hidden ? 1u : 0u;
+    bool ok = WriteDw(HKEY_CURRENT_USER, kHideIconsNew,     guid.c_str(), v);
+    WriteDw(HKEY_CURRENT_USER, kHideIconsClassic, guid.c_str(), v); // второй режим меню — best-effort
+    if (!ok) err = L"Не удалось записать значение в реестр.";
+    return ok;
+}
+
+static std::wstring HkcuClsidKey(const std::wstring& guid) {
+    return L"SOFTWARE\\Classes\\CLSID\\" + guid;
+}
+
+// === Дерево навигации (левая панель): закрепить системный узел — Этот компьютер, Корзина ===
+// За показ в дереве отвечает System.IsPinnedToNameSpaceTree на самом CLSID (per-user override в
+// HKCU\Software\Classes\CLSID\{guid}), а НЕ запись в Desktop\NameSpace. Объект уже зарегистрирован
+// системой (InProcServer32/ShellFolder в HKLM) — здесь только закрепляем/откалываем его в дереве.
+static const wchar_t* kPinValue = L"System.IsPinnedToNameSpaceTree";
+
+bool GetNavTreePinned(const std::wstring& guid) {
+    DWORD v = 0;
+    RegReadDword(HKEY_CURRENT_USER, HkcuClsidKey(guid), kPinValue, v);
+    return v != 0;
+}
+
+bool SetNavTreePinned(const std::wstring& guid, bool pinned, std::wstring& backupPath, std::wstring& err) {
+    backupPath = MakeBackupDir();
+    std::wstring clsid = HkcuClsidKey(guid);
+    std::wstring reg = L"Windows Registry Editor Version 5.00\r\n\r\n"
+                     + RegDwordBackupLine(L"HKEY_CURRENT_USER", clsid, kPinValue, HKEY_CURRENT_USER);
+    if (!SaveTextFileUtf16(backupPath + L"navpin_before.reg", reg)) {
+        err = L"Не удалось сохранить бэкап — изменение отменено."; return false; // нет бэкапа — не пишем
+    }
+    // Пишем явные 1/0 (а не удаляем при откреплении): 0 надёжно прячет даже узел, показанный по
+    // умолчанию (Этот компьютер), а откат к исходному состоянию есть в navpin_before.reg.
+    if (!WriteDw(HKEY_CURRENT_USER, clsid, kPinValue, pinned ? 1u : 0u)) {
+        err = L"Не удалось записать значение в реестр."; return false;
+    }
+    return true;
+}
+
+// === «Этот компьютер» (правая панель): узел-команда (launcher) — Управление дисками ===
+// Узел-команду в ЛЕВОЕ дерево чисто реестром добавить нельзя (дерево показывает только папки,
+// клик = навигация внутрь, Shell\Open\Command не вызывается — нужна своя namespace-extension DLL).
+// Рабочий способ без DLL: положить узел в MyComputer\NameSpace. Он показывается ВНУТРИ окна
+// «Этот компьютер», и двойной клик по нему выполняет Shell\Open\Command (объект — не папка).
+static std::wstring HkcuMyComputerNsKey(const std::wstring& guid) {
+    return std::wstring(kExplorer) + L"\\MyComputer\\NameSpace\\" + guid;
+}
+
+bool GetMyComputerNode(const std::wstring& guid) {
+    return KeyExists(HKEY_CURRENT_USER, HkcuMyComputerNsKey(guid));
+}
+
+bool AddMyComputerCommand(const std::wstring& guid, const std::wstring& name, const std::wstring& iconPath,
+                          const std::wstring& command, std::wstring& backupPath, std::wstring& err) {
+    backupPath = MakeBackupDir();
+    std::wstring clsid = HkcuClsidKey(guid);
+    std::wstring nsKey = HkcuMyComputerNsKey(guid);
+    // Бэкап обоих ключей (их ещё нет — маркеры [-...] для отката).
+    if (!BackupKeyState(HKEY_CURRENT_USER, clsid, L"launcher_clsid_before.reg", backupPath, err)) return false;
+    if (!BackupKeyState(HKEY_CURRENT_USER, nsKey, L"launcher_ns_before.reg",    backupPath, err)) return false;
+
+    bool ok = true;
+    auto W = [&](bool r){ if (!r) ok = false; };
+    W(WriteSz    (HKEY_CURRENT_USER, clsid, nullptr, name));
+    W(WriteSz    (HKEY_CURRENT_USER, clsid, L"InfoTip", name));
+    W(WriteExpand(HKEY_CURRENT_USER, clsid + L"\\DefaultIcon", nullptr, iconPath));
+    W(WriteExpand(HKEY_CURRENT_USER, clsid + L"\\Shell\\Open\\Command", nullptr, command));
+    // Attributes=0 → объект не папка: двойной клик вызывает глагол Open (нашу команду), а не вход внутрь.
+    W(WriteDw    (HKEY_CURRENT_USER, clsid + L"\\ShellFolder", L"Attributes", 0u));
+    W(WriteSz    (HKEY_CURRENT_USER, nsKey, nullptr, name));
+    if (!ok) {
+        // откат частично созданного — чтобы не осталось «полуузла»
+        DeleteKeyForced(HKEY_CURRENT_USER, clsid);
+        DeleteKeyForced(HKEY_CURRENT_USER, nsKey);
+        err = L"Не удалось создать узел в «Этот компьютер»."; return false;
+    }
+    return true;
+}
+
+bool RemoveMyComputerNode(const std::wstring& guid, std::wstring& backupPath, std::wstring& err) {
+    backupPath = MakeBackupDir();
+    std::wstring nsKey = HkcuMyComputerNsKey(guid);
+    std::wstring clsid = HkcuClsidKey(guid);
+    // Бэкап перед удалением: экспорт существующих ключей (откат — реимпортом этих .reg).
+    if (!BackupKeyState(HKEY_CURRENT_USER, nsKey, L"launcher_ns_removed.reg",    backupPath, err)) return false;
+    if (!BackupKeyState(HKEY_CURRENT_USER, clsid, L"launcher_clsid_removed.reg", backupPath, err)) return false;
+
+    bool ok = DeleteKeyForced(HKEY_CURRENT_USER, nsKey);
+    DeleteKeyForced(HKEY_CURRENT_USER, clsid); // наша CLSID-регистрация; best-effort
+    if (!ok) { err = L"Не удалось убрать узел из «Этот компьютер»."; return false; }
     return true;
 }

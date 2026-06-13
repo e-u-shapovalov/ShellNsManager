@@ -27,7 +27,7 @@ BEGIN
 
     GROUPBOX        "Где показать узел", -1, 10, 102, 310, 36
     AUTOCHECKBOX    "Этот компьютер", IDC_ADD_LOC_PC, 20, 116, 120, 12
-    AUTOCHECKBOX    "Дерево (рабочий стол)", IDC_ADD_LOC_TREE, 150, 116, 150, 12
+    AUTOCHECKBOX    "Панель навигации (слева)", IDC_ADD_LOC_TREE, 150, 116, 165, 12
 
     GROUPBOX        "Куда писать в реестр", -1, 10, 144, 310, 48
     AUTORADIOBUTTON "HKCU — только для текущего пользователя", IDC_ADD_HIVE_HKCU, 20, 158, 290, 12, WS_GROUP
