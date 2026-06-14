@@ -1,6 +1,6 @@
 # Скриншоты для README
 
-- `main-window.png` — главное окно ShellNsManager (добавлено).
+- `main-window-v1.2.png` — главное окно ShellNsManager (добавлено).
 
 Можно дополнить:
 

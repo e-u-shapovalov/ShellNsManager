@@ -30,7 +30,7 @@ If Releases are empty or there are no files under **Assets**, a ready public bui
 
 ## Screenshots
 
-![ShellNsManager main window: namespace nodes under This PC and the Desktop tree](docs/screenshots/main-window.png)
+![ShellNsManager main window: namespace nodes under This PC and the Desktop tree](docs/screenshots/main-window-v1.2.png)
 
 ## Installation
 
