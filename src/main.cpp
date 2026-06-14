@@ -17,7 +17,7 @@
 // Заголовок окна с версией и меткой времени сборки (меняется каждую сборку — видно, что версия свежая).
 #define SNM_WIDE2(s) L##s
 #define SNM_WIDE(s)  SNM_WIDE2(s)
-#define SNM_VERSION  L"1.1.0"
+#define SNM_VERSION  L"1.2.0"
 #define SNM_TITLE    L"Shell Namespace Manager   v" SNM_VERSION L"   (сборка " SNM_WIDE(__DATE__) L" " SNM_WIDE(__TIME__) L")"
 
 // Логический узел: объединяет 64- и 32-битную записи одного GUID в одной ветке.
@@ -26,6 +26,7 @@ struct NsNode {
     NsLocation   location = NsLocation::MyComputer;
     NsHive       hive     = NsHive::HKLM;
     bool         in64 = false, in32 = false, hasSort = false, hasNavPin = false;
+    bool         isPin = false;   // закреплён через System.IsPinnedToNameSpaceTree (не namespace-запись)
     DWORD        sortOrder = 0;
     DWORD        navPin = 0;
     int          icon = -1;
@@ -45,8 +46,28 @@ static const int kTbY = 8, kTbH = 28, kViewTop = kTbY + kTbH + 8, kMargin = 8, k
 // CLSID значков рабочего стола (для флажков показа/скрытия через HideDesktopIcons) и узлов дерева.
 static const wchar_t* kGuidThisPC     = L"{20D04FE0-3AEA-1069-A2D8-08002B30309D}"; // Этот компьютер
 static const wchar_t* kGuidRecycleBin = L"{645FF040-5081-101B-9F08-00AA002F954E}"; // Корзина
-// Свой фиксированный CLSID для узла-команды «Управление дисками» (чтобы флажок его находил).
+// Готовые системные инструменты — узлы-команды в «Этот компьютер» (свой фиксированный CLSID на каждый,
+// чтобы флажок надёжно находил узел). Команда — REG_EXPAND_SZ через %SystemRoot%; запуск двойным кликом.
 static const wchar_t* kGuidDiskMgmt   = L"{874C19C0-3F96-4669-B0DF-CCE51559C7BD}";
+static const wchar_t* kGuidNetwork    = L"{03371F15-400F-4C4F-A7AB-7858B5F263B5}";
+static const wchar_t* kGuidAppwiz     = L"{67194069-BBC9-46BE-BA4D-9C792881A321}";
+static const wchar_t* kGuidDevmgmt    = L"{0431FE3F-FE62-43C8-9F0D-AFD5CF3A2D4D}";
+static const wchar_t* kGuidCompmgmt   = L"{E74ACC6C-0086-4FE4-85ED-E4CEC62EA53F}";
+
+// Таблица готовых инструментов: пункт меню, CLSID, имя (ключ T()), апплет в скобках, иконка, команда.
+struct CmdDef { int id; const wchar_t* guid; const wchar_t* name; const wchar_t* hint; const wchar_t* icon; const wchar_t* command; };
+static const CmdDef kCommands[] = {
+    { IDM_TREE_DISK,    kGuidDiskMgmt,  L"Управление дисками",      L"diskmgmt.msc", L"%SystemRoot%\\system32\\imageres.dll,-27",
+      L"%SystemRoot%\\system32\\mmc.exe \"%SystemRoot%\\system32\\diskmgmt.msc\"" },
+    { IDM_CMD_NETWORK,  kGuidNetwork,   L"Сетевые подключения",     L"ncpa.cpl",     L"%SystemRoot%\\system32\\netshell.dll,0",
+      L"%SystemRoot%\\system32\\control.exe ncpa.cpl" },
+    { IDM_CMD_APPWIZ,   kGuidAppwiz,    L"Программы и компоненты",   L"appwiz.cpl",   L"%SystemRoot%\\system32\\appwiz.cpl,0",
+      L"%SystemRoot%\\system32\\control.exe appwiz.cpl" },
+    { IDM_CMD_DEVMGMT,  kGuidDevmgmt,   L"Диспетчер устройств",     L"devmgmt.msc",  L"%SystemRoot%\\system32\\devmgr.dll,0",
+      L"%SystemRoot%\\system32\\mmc.exe \"%SystemRoot%\\system32\\devmgmt.msc\"" },
+    { IDM_CMD_COMPMGMT, kGuidCompmgmt,  L"Управление компьютером",   L"compmgmt.msc", L"%SystemRoot%\\system32\\mycomput.dll,0",
+      L"%SystemRoot%\\system32\\mmc.exe \"%SystemRoot%\\system32\\compmgmt.msc\"" },
+};
 
 // Компактный тулбар — только частые действия (текст/тултип = русский ключ, переводится через T()).
 struct BtnDef { int id; const wchar_t* text; int w; const wchar_t* tip; };
@@ -97,8 +118,17 @@ static HMENU BuildMenu() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_TREE_PC,   T(L"Показывать «Этот компьютер» в дереве слева"));
     AppendMenuW(view, MF_STRING, IDM_TREE_BIN,  T(L"Показывать «Корзину» в дереве слева"));
-    AppendMenuW(view, MF_STRING, IDM_TREE_DISK, T(L"Показывать «Управление дисками» в «Этот компьютер»"));
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)view, T(L"Вид"));
+
+    // Меню «Инструменты»: готовые системные команды в «Этот компьютер» (флажки) + своя команда.
+    HMENU tools = CreatePopupMenu();
+    for (const auto& c : kCommands) {
+        std::wstring label = std::wstring(T(c.name)) + L"   (" + c.hint + L")";
+        AppendMenuW(tools, MF_STRING, c.id, label.c_str());
+    }
+    AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(tools, MF_STRING, IDM_CMD_CUSTOM, T(L"Добавить свою команду…"));
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)tools, T(L"Инструменты"));
 
     HMENU expl = CreatePopupMenu();
     AppendMenuW(expl, MF_STRING, IDC_BTN_RESTART, T(L"Применить (перезапуск Проводника)"));
@@ -167,6 +197,28 @@ static void BuildNodes() {
         if (found->target.empty() && !e.target.empty()) found->target=e.target;
         if (found->marker.empty() && !e.marker.empty()) found->marker=e.marker;
     }
+    // Системные узлы, закреплённые в дереве навигации (pin) без namespace-записи: иначе они видны
+    // в Проводнике, но не в приложении. Показываем их в разделе «Панель навигации (слева)».
+    auto addPinNode = [&](const wchar_t* guid) {
+        if (!GetNavTreePinned(guid)) return;
+        // SortOrderIndex закреплённого узла Проводник учитывает наравне с остальными (HKCU поверх HKLM) —
+        // иначе This PC/Корзина встают не на своё место.
+        DWORD soi = 0; bool hasSoi = GetNavTreeSortOrder(guid, soi);
+        for (auto& n : g_nodes)
+            if (n.location==NsLocation::Desktop && lstrcmpiW(n.guid.c_str(), guid)==0) {
+                // Узел уже есть как namespace-запись (Корзина — в Desktop\NameSpace HKLM). Не дублируем:
+                // помечаем закреплённым системным и берём эффективный индекс из HKCU, а не HKLM-значение.
+                n.isPin = true;
+                if (!n.hasNavPin) { n.hasNavPin = true; n.navPin = 1; }
+                if (hasSoi) { n.hasSort = true; n.sortOrder = soi; }
+                return;
+            }
+        NsNode n; n.guid=guid; n.location=NsLocation::Desktop; n.hive=NsHive::HKCU; n.isPin=true;
+        if (hasSoi) { n.hasSort = true; n.sortOrder = soi; }
+        g_nodes.push_back(std::move(n));
+    };
+    addPinNode(kGuidThisPC);
+    addPinNode(kGuidRecycleBin);
     for (auto& n : g_nodes) {
         n.displayName = ResolveDisplayName(n.guid);
         if (n.displayName==n.guid && !n.marker.empty()) n.displayName=n.marker;
@@ -219,6 +271,7 @@ static void AddChildren(HTREEITEM root, NsLocation loc) {
         if (collide && !g_nodes[i].marker.empty() && g_nodes[i].marker != g_nodes[i].displayName)
             t += L"  · " + g_nodes[i].marker;
         if (g_nodes[i].hive == NsHive::HKCU) t += L"   (HKCU)";
+        if (g_nodes[i].isPin) t += std::wstring(L"   ") + T(L"[закреплён]");
         InsertTreeItem(root, t.c_str(), g_nodes[i].icon, (LPARAM)i, false);
     }
 }
@@ -242,6 +295,12 @@ static void Populate() {
 static void ShowDetails(int idx) {
     if (idx < 0 || idx >= (int)g_nodes.size()) { SetWindowTextW(g_details, L""); return; }
     const NsNode& n = g_nodes[idx];
+    if (n.isPin) {
+        std::wstring t = n.displayName + L"   ·   HKCU   " + T(L"[закреплён в дереве навигации]") + L"\r\n" + n.guid
+                       + L"\r\n" + T(L"Системный узел, закреплён через System.IsPinnedToNameSpaceTree. «Удалить» — открепит его.");
+        SetWindowTextW(g_details, t.c_str());
+        return;
+    }
     std::wstring views;
     if (n.hive==NsHive::HKCU) views = L"HKCU";
     else { views = L"HKLM "; views += (n.in64&&n.in32) ? T(L"(64+32-бит)") : (n.in64 ? T(L"(64-бит)") : T(L"(32-бит)")); }
@@ -315,18 +374,13 @@ static void ToggleNavPin(HWND h, const wchar_t* name, const wchar_t* guid) {
     }
 }
 
-// Добавить/убрать узел-команду «Управление дисками» внутри «Этот компьютер» (двойной клик запускает оснастку).
-static void ToggleMyComputerLauncher(HWND h, const wchar_t* name, const wchar_t* guid) {
-    bool present = GetMyComputerNode(guid);
+// Добавить/убрать готовый узел-команду внутри «Этот компьютер» (двойной клик запускает инструмент).
+static void ToggleMyComputerCommand(HWND h, const CmdDef& cmd) {
+    const wchar_t* name = T(cmd.name);
+    bool present = GetMyComputerNode(cmd.guid);
     std::wstring backup, err;
-    bool ok;
-    if (present) {
-        ok = RemoveMyComputerNode(guid, backup, err);
-    } else {
-        std::wstring icon = L"%SystemRoot%\\system32\\imageres.dll,-27";   // значок жёсткого диска
-        std::wstring cmd  = L"%SystemRoot%\\system32\\mmc.exe \"%SystemRoot%\\system32\\diskmgmt.msc\"";
-        ok = AddMyComputerCommand(guid, name, icon, cmd, backup, err);
-    }
+    bool ok = present ? RemoveMyComputerNode(cmd.guid, backup, err)
+                      : AddMyComputerCommand(cmd.guid, name, cmd.icon, cmd.command, backup, err);
     if (ok) {
         SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
         Populate(); // узел появился/исчез в «Этот компьютер» — перечитать дерево приложения
@@ -336,6 +390,72 @@ static void ToggleMyComputerLauncher(HWND h, const wchar_t* name, const wchar_t*
         SetStatus(s.c_str());
     } else {
         MessageBoxW(h, err.c_str(), T(L"Не удалось"), MB_OK|MB_ICONWARNING);
+    }
+}
+
+// Превратить «короткое» имя апплета в полную команду: ncpa.cpl → control.exe ncpa.cpl;
+// diskmgmt.msc → mmc.exe "…\diskmgmt.msc". Полную команду (с пробелом/путём) или .exe не трогаем.
+static std::wstring NormalizeCommand(std::wstring cmd) {
+    size_t a = cmd.find_first_not_of(L" \t");
+    if (a == std::wstring::npos) return cmd;
+    size_t b = cmd.find_last_not_of(L" \t");
+    cmd = cmd.substr(a, b - a + 1);
+    bool bare = cmd.find_first_of(L" \t\\/") == std::wstring::npos; // голое имя файла, без аргументов и пути
+    auto endsWith = [&](const wchar_t* ext) {
+        int n = (int)wcslen(ext);
+        return (int)cmd.size() > n &&
+               CompareStringOrdinal(cmd.c_str() + cmd.size() - n, n, ext, n, TRUE) == CSTR_EQUAL;
+    };
+    if (bare && endsWith(L".cpl"))
+        return L"%SystemRoot%\\system32\\control.exe " + cmd;
+    if (bare && endsWith(L".msc"))
+        return L"%SystemRoot%\\system32\\mmc.exe %SystemRoot%\\system32\\" + cmd; // путь System32 без пробелов — кавычки не нужны
+    return cmd;
+}
+
+// Обернуть команду в запуск от администратора (через UAC). exe и аргументы разделяются, чтобы
+// Start-Process получил их корректно; %SystemRoot% раскроет Проводник (команда — REG_EXPAND_SZ).
+static std::wstring ElevateCommand(const std::wstring& cmd) {
+    std::wstring exe, args;
+    size_t i = 0;
+    if (!cmd.empty() && cmd[0] == L'"') {
+        size_t end = cmd.find(L'"', 1);
+        exe = cmd.substr(1, (end == std::wstring::npos) ? std::wstring::npos : end - 1);
+        i = (end == std::wstring::npos) ? cmd.size() : end + 1;
+    } else {
+        size_t sp = cmd.find(L' ');
+        exe = cmd.substr(0, sp);
+        i = (sp == std::wstring::npos) ? cmd.size() : sp;
+    }
+    while (i < cmd.size() && cmd[i] == L' ') ++i;
+    args = cmd.substr(i);
+    auto esc = [](const std::wstring& s) {  // экранировать ' для single-quoted powershell-строки
+        std::wstring r;
+        for (wchar_t c : s) { if (c == L'\'') r += L"''"; else r += c; }
+        return r;
+    };
+    std::wstring ps = L"%SystemRoot%\\system32\\WindowsPowerShell\\v1.0\\powershell.exe -WindowStyle Hidden "
+                      L"-Command \"Start-Process '" + esc(exe) + L"'";
+    if (!args.empty()) ps += L" -ArgumentList '" + esc(args) + L"'";
+    ps += L" -Verb RunAs\"";
+    return ps;
+}
+
+// Диалог «Добавить свою команду» — пользователь вводит имя/команду/иконку, узел создаётся с новым GUID.
+static void AddCustomCommandDialog(HWND h) {
+    std::wstring name, command, icon, guid, backup, err;
+    bool admin = false;
+    if (!ShowAddCommandDialog(h, name, command, icon, admin)) return;
+    command = NormalizeCommand(command);
+    if (admin) command = ElevateCommand(command);
+    if (AddCustomCommand(name, icon, command, guid, backup, err)) {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+        Populate();
+        std::wstring s = L"«" + name + L"»" + T(L" — добавлено в «Этот компьютер»")
+                       + T(L". Нажмите «Применить», чтобы увидеть.");
+        SetStatus(s.c_str());
+    } else {
+        MessageBoxW(h, err.c_str(), T(L"Не удалось добавить"), MB_OK|MB_ICONWARNING);
     }
 }
 
@@ -371,6 +491,7 @@ static void MoveSelected(int dir) {
     TVITEMW ti{}; ti.mask=TVIF_PARAM; ti.hItem=sel; TreeView_GetItem(g_tree, &ti);
     int idx = (int)ti.lParam;
     if (idx < 0 || idx >= (int)g_nodes.size()) { SetStatus(T(L"Выберите конкретный узел (не заголовок)")); return; }
+    if (g_nodes[idx].isPin) { SetStatus(T(L"Закреплённый узел нельзя перемещать")); return; }
     NsLocation loc = g_nodes[idx].location;
     std::wstring guid = g_nodes[idx].guid;
     std::vector<int> order = SectionOrder(loc);
@@ -478,7 +599,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         CheckMenuItem(mp, IDM_DESKTOP_BIN,     MF_BYCOMMAND | (GetDesktopIconHidden(kGuidRecycleBin) ? MF_UNCHECKED : MF_CHECKED));
         CheckMenuItem(mp, IDM_TREE_PC,         MF_BYCOMMAND | (GetNavTreePinned(kGuidThisPC)     ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(mp, IDM_TREE_BIN,        MF_BYCOMMAND | (GetNavTreePinned(kGuidRecycleBin) ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(mp, IDM_TREE_DISK,       MF_BYCOMMAND | (GetMyComputerNode(kGuidDiskMgmt)  ? MF_CHECKED : MF_UNCHECKED));
+        for (const auto& c : kCommands)
+            CheckMenuItem(mp, c.id, MF_BYCOMMAND | (GetMyComputerNode(c.guid) ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuRadioItem(mp, IDM_LANG_RU, IDM_LANG_EN, (LocGetLang()==0 ? IDM_LANG_RU : IDM_LANG_EN), MF_BYCOMMAND);
         return 0;
     }
@@ -502,6 +624,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_COMMAND:
+        // готовые команды-инструменты (таблица kCommands) — toggle узла в «Этот компьютер»
+        for (const auto& c : kCommands)
+            if (LOWORD(w) == (WORD)c.id) { ToggleMyComputerCommand(h, c); return 0; }
         switch (LOWORD(w)) {
         case IDC_BTN_REFRESH:
             Populate();
@@ -533,6 +658,21 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             int idx = (int)ti.lParam;
             if (idx < 0 || idx >= (int)g_nodes.size()) { SetStatus(T(L"Выберите конкретный узел (не заголовок)")); break; }
             const NsNode& n = g_nodes[idx];
+            if (n.isPin) {
+                std::wstring guid = n.guid, dname = n.displayName;
+                std::wstring pmsg = T(L"Открепить «") + dname + T(L"» из дерева навигации?\n\nЭто системный узел (не namespace-запись). В Проводнике он исчезнет из левой панели.");
+                if (MessageBoxW(h, pmsg.c_str(), T(L"Открепить узел"), MB_YESNO|MB_ICONQUESTION) == IDYES) {
+                    std::wstring backup, err;
+                    if (SetNavTreePinned(guid, false, backup, err)) {
+                        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+                        Populate();
+                        SetStatus(T(L"Узел откреплён. Нажмите «Применить», чтобы увидеть."));
+                    } else {
+                        MessageBoxW(h, err.c_str(), T(L"Не удалось"), MB_OK|MB_ICONWARNING);
+                    }
+                }
+                break;
+            }
             std::wstring msg = T(L"Удалить «") + n.displayName + T(L"» из namespace?\n\nGUID: ") + n.guid +
                                T(L"\nКуст: ") + (n.hive==NsHive::HKCU ? std::wstring(L"HKCU") : std::wstring(L"HKLM")) +
                                T(L"\n\nПеред удалением будет сохранён .reg-бэкап — операция обратима.");
@@ -601,8 +741,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case IDM_TREE_BIN:
             ToggleNavPin(h, T(L"Корзина"), kGuidRecycleBin);
             break;
-        case IDM_TREE_DISK:
-            ToggleMyComputerLauncher(h, T(L"Управление дисками"), kGuidDiskMgmt);
+        case IDM_CMD_CUSTOM:
+            AddCustomCommandDialog(h);
             break;
         case IDC_BTN_RESTART:
             if (MessageBoxW(h, T(L"Применить изменения? Проводник перезапустится: панель задач на мгновение исчезнет и вернётся."),

@@ -110,3 +110,83 @@ bool ShowAddDialog(HWND parent, std::wstring& guid, std::wstring& backupPath) {
     if (r == IDOK) { guid = s_guid; backupPath = s_backup; return true; }
     return false;
 }
+
+// ---- Диалог «Добавить свою команду» ----
+
+static std::wstring s_cmdName, s_cmdCommand, s_cmdIcon;
+static bool         s_cmdAdmin = false;
+static HICON        s_cmdPreviewIcon = nullptr;
+
+static void UpdateCmdIconPreview(HWND dlg) {
+    std::wstring cur = DlgText(dlg, IDC_CMD_ICON);
+    int idx = 0;
+    std::wstring pathPart = cur;
+    size_t comma = cur.find_last_of(L',');
+    if (comma != std::wstring::npos) { pathPart = cur.substr(0, comma); idx = _wtoi(cur.c_str() + comma + 1); }
+    wchar_t expanded[MAX_PATH] = L"";
+    if (!ExpandEnvironmentStringsW(pathPart.c_str(), expanded, MAX_PATH)) lstrcpynW(expanded, pathPart.c_str(), MAX_PATH);
+    HICON hIco = nullptr;
+    SHDefExtractIconW(expanded, idx, 0, &hIco, nullptr, 32);
+    SendMessageW(GetDlgItem(dlg, IDC_CMD_ICON_PREVIEW), STM_SETICON, (WPARAM)hIco, 0);
+    if (s_cmdPreviewIcon) DestroyIcon(s_cmdPreviewIcon);
+    s_cmdPreviewIcon = hIco;
+}
+
+static INT_PTR CALLBACK CmdDlgProc(HWND dlg, UINT msg, WPARAM w, LPARAM l) {
+    (void)l;
+    switch (msg) {
+    case WM_INITDIALOG:
+        SetDlgItemTextW(dlg, IDC_CMD_ICON, L"%SystemRoot%\\system32\\imageres.dll,-27");
+        UpdateCmdIconPreview(dlg);
+        LocDialog(dlg);
+        return TRUE;
+
+    case WM_COMMAND:
+        switch (LOWORD(w)) {
+        case IDC_CMD_ICON:
+            if (HIWORD(w) == EN_CHANGE) UpdateCmdIconPreview(dlg);
+            return TRUE;
+        case IDC_CMD_ICON_BROWSE: {
+            std::wstring cur = DlgText(dlg, IDC_CMD_ICON);
+            int idx = 0;
+            std::wstring pathPart = cur;
+            size_t comma = cur.find_last_of(L',');
+            if (comma != std::wstring::npos) { pathPart = cur.substr(0, comma); idx = _wtoi(cur.c_str() + comma + 1); }
+            wchar_t pbuf[MAX_PATH] = L"";
+            lstrcpynW(pbuf, pathPart.empty() ? L"%SystemRoot%\\system32\\shell32.dll" : pathPart.c_str(), MAX_PATH);
+            if (PickIconDlg(dlg, pbuf, MAX_PATH, &idx)) {
+                std::wstring res = std::wstring(pbuf) + L"," + std::to_wstring(idx);
+                SetDlgItemTextW(dlg, IDC_CMD_ICON, res.c_str()); // EN_CHANGE обновит превью
+            }
+            return TRUE;
+        }
+        case IDOK: {
+            std::wstring name    = DlgText(dlg, IDC_CMD_NAME);
+            std::wstring command = DlgText(dlg, IDC_CMD_COMMAND);
+            std::wstring icon    = DlgText(dlg, IDC_CMD_ICON);
+            if (name.empty())    { MessageBoxW(dlg, T(L"Укажите имя пункта."),  T(L"Добавить свою команду"), MB_OK|MB_ICONINFORMATION); return TRUE; }
+            if (command.empty()) { MessageBoxW(dlg, T(L"Укажите команду запуска."), T(L"Добавить свою команду"), MB_OK|MB_ICONINFORMATION); return TRUE; }
+            s_cmdName = name; s_cmdCommand = command; s_cmdIcon = icon;
+            s_cmdAdmin = (IsDlgButtonChecked(dlg, IDC_CMD_ADMIN) == BST_CHECKED);
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(dlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+
+    case WM_DESTROY:
+        if (s_cmdPreviewIcon) { DestroyIcon(s_cmdPreviewIcon); s_cmdPreviewIcon = nullptr; }
+        return FALSE;
+    }
+    return FALSE;
+}
+
+bool ShowAddCommandDialog(HWND parent, std::wstring& name, std::wstring& command, std::wstring& iconPath, bool& runAsAdmin) {
+    s_cmdName.clear(); s_cmdCommand.clear(); s_cmdIcon.clear(); s_cmdAdmin = false;
+    INT_PTR r = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ADDCMD), parent, CmdDlgProc, 0);
+    if (r == IDOK) { name = s_cmdName; command = s_cmdCommand; iconPath = s_cmdIcon; runAsAdmin = s_cmdAdmin; return true; }
+    return false;
+}

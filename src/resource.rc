@@ -47,3 +47,28 @@ BEGIN
     DEFPUSHBUTTON   "Скрыть", IDOK, 200, 176, 54, 16
     PUSHBUTTON      "Отмена", IDCANCEL, 256, 176, 54, 16
 END
+
+IDD_ADDCMD DIALOGEX 0, 0, 330, 196
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Добавить свою команду"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "Имя пункта:", -1, 10, 12, 95, 10
+    EDITTEXT        IDC_CMD_NAME, 108, 10, 212, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Команда:", -1, 10, 34, 95, 10
+    EDITTEXT        IDC_CMD_COMMAND, 108, 32, 212, 14, ES_AUTOHSCROLL
+    LTEXT           "Можно просто: ncpa.cpl или diskmgmt.msc. Либо полная команда или путь к .exe.", -1, 108, 50, 212, 18
+
+    LTEXT           "Иконка:", -1, 10, 76, 95, 10
+    EDITTEXT        IDC_CMD_ICON, 108, 74, 130, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Выбрать…", IDC_CMD_ICON_BROWSE, 242, 74, 48, 14
+    CONTROL         "", IDC_CMD_ICON_PREVIEW, "Static", SS_ICON | SS_CENTERIMAGE | WS_CHILD | WS_VISIBLE, 298, 70, 24, 24
+
+    AUTOCHECKBOX    "Запускать от имени администратора (через запрос UAC)", IDC_CMD_ADMIN, 10, 100, 312, 12
+
+    LTEXT           "Пункт появится в «Этот компьютер»; двойной клик выполнит команду. Запись в HKCU (для текущего пользователя), убрать можно кнопкой «Удалить».", -1, 10, 120, 312, 28
+
+    DEFPUSHBUTTON   "Создать", IDOK, 206, 170, 54, 16
+    PUSHBUTTON      "Отмена", IDCANCEL, 266, 170, 54, 16
+END

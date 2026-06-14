@@ -103,6 +103,8 @@ bool SetDesktopIconHidden(const std::wstring& guid, bool hidden, std::wstring& b
 // Системный узел (Этот компьютер, Корзина) закреплён в дереве навигации?
 // Читает System.IsPinnedToNameSpaceTree из HKCU\Software\Classes\CLSID\{guid}.
 bool GetNavTreePinned(const std::wstring& guid);
+// Эффективный SortOrderIndex закреплённого системного узла (HKCU поверх HKLM). false — индекса нет.
+bool GetNavTreeSortOrder(const std::wstring& guid, DWORD& out);
 // Закрепить/открепить системный узел в дереве навигации (per-user override на CLSID). Бэкап.
 bool SetNavTreePinned(const std::wstring& guid, bool pinned, std::wstring& backupPath, std::wstring& err);
 
@@ -114,6 +116,11 @@ bool AddMyComputerCommand(const std::wstring& guid, const std::wstring& name, co
                           const std::wstring& command, std::wstring& backupPath, std::wstring& err);
 // Убрать узел-команду из «Этот компьютер» (удаляет MyComputer\NameSpace\{guid} и нашу CLSID-регистрацию). Бэкап.
 bool RemoveMyComputerNode(const std::wstring& guid, std::wstring& backupPath, std::wstring& err);
+
+// Добавить СВОЮ команду в «Этот компьютер» с автоматически сгенерированным GUID (обёртка над
+// AddMyComputerCommand). newGuid — сгенерированный GUID. Для произвольных команд из диалога.
+bool AddCustomCommand(const std::wstring& name, const std::wstring& iconPath, const std::wstring& command,
+                      std::wstring& newGuid, std::wstring& backupPath, std::wstring& err);
 
 // Полностью выключить/включить «Быстрый доступ» (Home): скрыть узел/секцию Quick Access +
 // LaunchTo=1, ShowRecent=0, ShowFrequent=0 (HKCU), чтобы Проводник открывал «Этот компьютер»

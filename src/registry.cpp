@@ -55,6 +55,14 @@ static void ReadClsidExtras(NsEntry& e) {
     } else {
         cands.emplace_back(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Classes\\CLSID\\" + g);
     }
+    // System.IsPinnedToNameSpaceTree — per-user override, живёт в HKCU\...\CLSID независимо от того,
+    // в каком кусте лежит namespace-запись (у Корзины запись в HKLM Desktop\NameSpace, а закрепление —
+    // в HKCU). Читаем его из HKCU первым, чтобы такой узел не считался «незакреплённым».
+    {
+        DWORD p = 0;
+        if (RegReadDword(HKEY_CURRENT_USER, L"SOFTWARE\\Classes\\CLSID\\" + g,
+                         L"System.IsPinnedToNameSpaceTree", p)) { e.navPin = p; e.hasNavPin = true; }
+    }
     for (const auto& c : cands) {
         if (!e.hasSort) {
             DWORD s = 0;
@@ -1117,6 +1125,14 @@ bool GetNavTreePinned(const std::wstring& guid) {
     return v != 0;
 }
 
+// Эффективный SortOrderIndex узла так, как его читает Проводник: HKCU перекрывает HKLM
+// (напр. у Корзины HKCU=80 побеждает HKLM=40). false — индекса нет ни там, ни там.
+bool GetNavTreeSortOrder(const std::wstring& guid, DWORD& out) {
+    if (RegReadDword(HKEY_CURRENT_USER,  HkcuClsidKey(guid), L"SortOrderIndex", out)) return true;
+    if (RegReadDword(HKEY_LOCAL_MACHINE, HkcuClsidKey(guid), L"SortOrderIndex", out)) return true;
+    return false;
+}
+
 bool SetNavTreePinned(const std::wstring& guid, bool pinned, std::wstring& backupPath, std::wstring& err) {
     backupPath = MakeBackupDir();
     std::wstring clsid = HkcuClsidKey(guid);
@@ -1185,4 +1201,14 @@ bool RemoveMyComputerNode(const std::wstring& guid, std::wstring& backupPath, st
     DeleteKeyForced(HKEY_CURRENT_USER, clsid); // наша CLSID-регистрация; best-effort
     if (!ok) { err = L"Не удалось убрать узел из «Этот компьютер»."; return false; }
     return true;
+}
+
+bool AddCustomCommand(const std::wstring& name, const std::wstring& iconPath, const std::wstring& command,
+                      std::wstring& newGuid, std::wstring& backupPath, std::wstring& err) {
+    GUID g;
+    if (FAILED(CoCreateGuid(&g))) { err = L"Не удалось сгенерировать GUID."; return false; }
+    wchar_t gs[64] = L"";
+    StringFromGUID2(g, gs, 64);
+    newGuid = gs;
+    return AddMyComputerCommand(newGuid, name, iconPath, command, backupPath, err);
 }

@@ -27,6 +27,11 @@
 #define IDM_TREE_PC         1108
 #define IDM_TREE_BIN        1109
 #define IDM_TREE_DISK       1110
+#define IDM_CMD_NETWORK     1111
+#define IDM_CMD_APPWIZ      1112
+#define IDM_CMD_DEVMGMT     1113
+#define IDM_CMD_COMPMGMT    1114
+#define IDM_CMD_CUSTOM      1115
 
 /* Диалог «Добавить свою папку» */
 #define IDD_ADD                2000
@@ -44,3 +49,12 @@
 /* Диалог «Скрыть встроенный» */
 #define IDD_HIDE               2100
 #define IDC_HIDE_LIST          2101
+
+/* Диалог «Добавить свою команду» */
+#define IDD_ADDCMD             2200
+#define IDC_CMD_NAME           2201
+#define IDC_CMD_COMMAND        2202
+#define IDC_CMD_ICON           2203
+#define IDC_CMD_ICON_BROWSE    2204
+#define IDC_CMD_ICON_PREVIEW   2205
+#define IDC_CMD_ADMIN          2206
