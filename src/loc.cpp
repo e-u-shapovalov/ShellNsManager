@@ -169,6 +169,19 @@ static const wchar_t* kEN[][2] = {
     { L"Включить «Быстрый доступ» обратно?\n\nПроводник снова будет показывать «Быстрый доступ» и собирать историю.", L"Turn “Quick access” back on?\n\nFile Explorer will show “Quick access” again and collect history." },
     { L"Быстрый доступ выключен — Проводник перезапущен. Бэкап: ", L"Quick access turned off — Explorer restarted. Backup: " },
     { L"Быстрый доступ включён — Проводник перезапущен. Бэкап: ", L"Quick access turned on — Explorer restarted. Backup: " },
+    // управление порядком: ручной ввод индекса, зоны, перетаскивание, полоса
+    { L"Задать порядок (индекс)", L"Set order (index)" },
+    { L"Задать порядок (индекс)…", L"Set order (index)…" },
+    { L"Индекс:", L"Index:" },
+    { L"Индекс", L"Index" },
+    { L"Введите целое число от 0 до 9999.", L"Enter a whole number from 0 to 9999." },
+    { L"Индекс изменён. Нажмите «Применить», чтобы увидеть результат.", L"Index changed. Click “Apply” to see the result." },
+    { L"Не удалось задать индекс", L"Failed to set index" },
+    { L"Фиксированный узел", L"Fixed node" },
+    { L"«%s» — системный узел, Проводник держит его на позиции %u. Порядок изменить нельзя.", L"“%s” is a system node; Explorer keeps it at position %u. Its order cannot be changed." },
+    { L"↑ над «Этот компьютер»: меньше %u", L"↑ above This PC: less than %u" },
+    { L"↑ между ПК и Корзиной: %u-%u      ↓ под Корзиной: больше %u", L"↑ between PC and Recycle Bin: %u-%u      ↓ below Recycle Bin: over %u" },
+    { L"≈ полоса Проводника (~%u) — поймай сортировкой", L"≈ Explorer divider (~%u) — catch it by sorting" },
 };
 
 const wchar_t* T(const wchar_t* ru) {

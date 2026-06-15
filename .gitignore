@@ -11,8 +11,9 @@
 *.idb
 *.tlog
 
-# Runtime artifacts (.reg backups)
+# Runtime artifacts (.reg backups, генерируемый файл языка)
 /backups/
+/lang/
 
 # Editor / IDE
 .vs/

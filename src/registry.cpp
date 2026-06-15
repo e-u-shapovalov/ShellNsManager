@@ -622,6 +622,46 @@ bool SetSortOrder(const std::vector<SortItem>& items, std::wstring& backupPath, 
     return true;
 }
 
+bool SetUserSortIndex(NsHive hive, const std::wstring& guid, DWORD index,
+                      std::wstring& backupPath, std::wstring& err) {
+    backupPath = MakeBackupDir();
+    std::wstring primary = L"SOFTWARE\\Classes\\CLSID\\" + guid;
+    std::wstring wow     = L"SOFTWARE\\Wow6432Node\\Classes\\CLSID\\" + guid;
+
+    std::wstring reg = L"Windows Registry Editor Version 5.00\r\n\r\n";
+    auto emitB = [&](const wchar_t* rn, HKEY root, const std::wstring& sub){
+        DWORD cur = 0; bool had = RegReadDword(root, sub, L"SortOrderIndex", cur);
+        reg += L"["; reg += rn; reg += L"\\"; reg += sub; reg += L"]\r\n";
+        if (had) { wchar_t hx[16]; swprintf_s(hx, L"%08lx", cur); reg += L"\"SortOrderIndex\"=dword:"; reg += hx; reg += L"\r\n"; }
+        else     { reg += L"\"SortOrderIndex\"=-\r\n"; }
+        reg += L"\r\n";
+    };
+    if (hive == NsHive::HKCU) emitB(L"HKEY_CURRENT_USER", HKEY_CURRENT_USER, primary);
+    else { emitB(L"HKEY_LOCAL_MACHINE", HKEY_LOCAL_MACHINE, primary);
+           emitB(L"HKEY_LOCAL_MACHINE", HKEY_LOCAL_MACHINE, wow); }
+    if (!SaveTextFileUtf16(backupPath + L"sortidx_before.reg", reg)) {
+        err = L"Не удалось сохранить бэкап sortidx_before.reg — изменение отменено."; return false;
+    }
+
+    if (hive == NsHive::HKCU) {
+        if (!WriteDw(HKEY_CURRENT_USER, primary, L"SortOrderIndex", index)) {
+            err = L"Не удалось записать SortOrderIndex в HKCU."; return false;
+        }
+        return true;
+    }
+    EnablePriv(SE_TAKE_OWNERSHIP_NAME);
+    EnablePriv(SE_RESTORE_NAME);
+    std::wstring aclWarn;
+    ProtWrite r = WriteProtectedDword(primary, L"SortOrderIndex", index);
+    if (r == ProtWrite::NotWrote) { err = L"Не удалось записать SortOrderIndex (смена владельца не прошла?)."; return false; }
+    if (r == ProtWrite::WroteNotRestored) aclWarn += L"  HKLM\\" + primary + L"\n";
+    ProtWrite rw = WriteProtectedDword(wow, L"SortOrderIndex", index);
+    if (rw == ProtWrite::WroteNotRestored) aclWarn += L"  HKLM\\" + wow + L"\n";
+    if (!aclWarn.empty())
+        err = L"Индекс применён, но у части ключей не восстановлены исходные права/владельца:\n" + aclWarn;
+    return true;
+}
+
 bool GetNavAllFolders() {
     DWORD v = 0;
     RegReadDword(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",

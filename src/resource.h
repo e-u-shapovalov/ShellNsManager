@@ -32,6 +32,7 @@
 #define IDM_CMD_DEVMGMT     1113
 #define IDM_CMD_COMPMGMT    1114
 #define IDM_CMD_CUSTOM      1115
+#define IDM_CTX_SORT        1120
 
 /* Диалог «Добавить свою папку» */
 #define IDD_ADD                2000
@@ -58,3 +59,8 @@
 #define IDC_CMD_ICON_BROWSE    2204
 #define IDC_CMD_ICON_PREVIEW   2205
 #define IDC_CMD_ADMIN          2206
+
+/* Диалог «Задать порядок (индекс)» — ручной ввод SortOrderIndex */
+#define IDD_SORTIDX            2300
+#define IDC_SORTIDX_EDIT       2301
+#define IDC_SORTIDX_INFO       2302

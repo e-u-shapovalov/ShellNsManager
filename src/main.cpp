@@ -17,7 +17,7 @@
 // Заголовок окна с версией и меткой времени сборки (меняется каждую сборку — видно, что версия свежая).
 #define SNM_WIDE2(s) L##s
 #define SNM_WIDE(s)  SNM_WIDE2(s)
-#define SNM_VERSION  L"1.2.0"
+#define SNM_VERSION  L"1.3.0"   // релиз; нерелизные сборки между релизами нумеруются 1.3.0.001, .002…
 #define SNM_TITLE    L"Shell Namespace Manager   v" SNM_VERSION L"   (сборка " SNM_WIDE(__DATE__) L" " SNM_WIDE(__TIME__) L")"
 
 // Логический узел: объединяет 64- и 32-битную записи одного GUID в одной ветке.
@@ -46,6 +46,14 @@ static const int kTbY = 8, kTbH = 28, kViewTop = kTbY + kTbH + 8, kMargin = 8, k
 // CLSID значков рабочего стола (для флажков показа/скрытия через HideDesktopIcons) и узлов дерева.
 static const wchar_t* kGuidThisPC     = L"{20D04FE0-3AEA-1069-A2D8-08002B30309D}"; // Этот компьютер
 static const wchar_t* kGuidRecycleBin = L"{645FF040-5081-101B-9F08-00AA002F954E}"; // Корзина
+
+// Эффективные индексы системных узлов на шкале SortOrderIndex навигации (замерено на Win11 25H2
+// build 26200): их собственный реестровый индекс Проводник игнорирует и ставит их по этим числам.
+// Пользовательский пин с индексом < kEffThisPC — над «Этот компьютер»; между kEffThisPC и
+// kEffRecycle — между ними; > kEffRecycle — под Корзиной. На других версиях Windows могут отличаться.
+static const DWORD kEffThisPC  = 80;
+static const DWORD kEffRecycle = 120;
+static const DWORD kBarHint    = 70;   // ориентир «плавающей» полосы Проводника (импровизированный, ~70)
 // Готовые системные инструменты — узлы-команды в «Этот компьютер» (свой фиксированный CLSID на каждый,
 // чтобы флажок надёжно находил узел). Команда — REG_EXPAND_SZ через %SystemRoot%; запуск двойным кликом.
 static const wchar_t* kGuidDiskMgmt   = L"{874C19C0-3F96-4669-B0DF-CCE51559C7BD}";
@@ -201,20 +209,22 @@ static void BuildNodes() {
     // в Проводнике, но не в приложении. Показываем их в разделе «Панель навигации (слева)».
     auto addPinNode = [&](const wchar_t* guid) {
         if (!GetNavTreePinned(guid)) return;
-        // SortOrderIndex закреплённого узла Проводник учитывает наравне с остальными (HKCU поверх HKLM) —
-        // иначе This PC/Корзина встают не на своё место.
-        DWORD soi = 0; bool hasSoi = GetNavTreeSortOrder(guid, soi);
+        // Реестровый SortOrderIndex системного узла Проводник ИГНОРИРУЕТ — он ставит его на свой
+        // внутренний «эффективный» индекс (kEffThisPC/kEffRecycle). Берём именно его, чтобы дерево
+        // приложения совпадало с реальным деревом Проводника, а пользовательские пины корректно
+        // ложились в три зоны (над This PC / между / под Корзиной).
+        DWORD eff = (lstrcmpiW(guid, kGuidRecycleBin)==0) ? kEffRecycle : kEffThisPC;
         for (auto& n : g_nodes)
             if (n.location==NsLocation::Desktop && lstrcmpiW(n.guid.c_str(), guid)==0) {
                 // Узел уже есть как namespace-запись (Корзина — в Desktop\NameSpace HKLM). Не дублируем:
-                // помечаем закреплённым системным и берём эффективный индекс из HKCU, а не HKLM-значение.
+                // помечаем закреплённым системным и ставим эффективный индекс.
                 n.isPin = true;
                 if (!n.hasNavPin) { n.hasNavPin = true; n.navPin = 1; }
-                if (hasSoi) { n.hasSort = true; n.sortOrder = soi; }
+                n.hasSort = true; n.sortOrder = eff;
                 return;
             }
         NsNode n; n.guid=guid; n.location=NsLocation::Desktop; n.hive=NsHive::HKCU; n.isPin=true;
-        if (hasSoi) { n.hasSort = true; n.sortOrder = soi; }
+        n.hasSort = true; n.sortOrder = eff;
         g_nodes.push_back(std::move(n));
     };
     addPinNode(kGuidThisPC);
@@ -242,6 +252,10 @@ static HTREEITEM InsertTreeItem(HTREEITEM parent, const wchar_t* text, int image
 static std::vector<int> SectionOrder(NsLocation loc) {
     std::vector<int> idxs;
     for (int i=0;i<(int)g_nodes.size();++i) if (g_nodes[i].location==loc) idxs.push_back(i);
+    // Единая шкала: пользовательские пины — по своему SortOrderIndex, системные узлы — по своему
+    // эффективному индексу (kEffThisPC/kEffRecycle, проставлен в addPinNode). Так пользовательский
+    // узел может стоять над «Этот компьютер», между ним и Корзиной или под Корзиной — ровно как в
+    // реальном дереве Проводника.
     std::sort(idxs.begin(), idxs.end(), [](int a, int b){
         DWORD sa = g_nodes[a].hasSort ? g_nodes[a].sortOrder : 0x7FFFFFFFu;
         DWORD sb = g_nodes[b].hasSort ? g_nodes[b].sortOrder : 0x7FFFFFFFu;
@@ -262,14 +276,21 @@ static bool IsVisibleTreeNode(int i) {
 
 static void AddChildren(HTREEITEM root, NsLocation loc) {
     std::vector<int> order = SectionOrder(loc);
+    bool barDone = false;
     for (int i : order) {
         if (!IsVisibleTreeNode(i)) continue;
-        std::wstring t = g_nodes[i].displayName;
+        // в навигации — пустая строка-место для полосы ~70 на границе индекса kBarHint (перед первым узлом ≥70)
+        if (loc == NsLocation::Desktop && !barDone && g_nodes[i].hasSort && g_nodes[i].sortOrder >= kBarHint) {
+            InsertTreeItem(root, L"", -1, (LPARAM)(-2), false);
+            barDone = true;
+        }
+        std::wstring t = T(g_nodes[i].displayName.c_str());   // системные имена («Корзина»→Recycle Bin) переводятся; свои папки остаются как есть
         bool collide = false;
         for (int j : order)
             if (j != i && lstrcmpiW(g_nodes[j].displayName.c_str(), g_nodes[i].displayName.c_str()) == 0) { collide = true; break; }
         if (collide && !g_nodes[i].marker.empty() && g_nodes[i].marker != g_nodes[i].displayName)
             t += L"  · " + g_nodes[i].marker;
+        if (g_nodes[i].hasSort) { wchar_t b[24]; swprintf_s(b, L"   · #%lu", g_nodes[i].sortOrder); t += b; }
         if (g_nodes[i].hive == NsHive::HKCU) t += L"   (HKCU)";
         if (g_nodes[i].isPin) t += std::wstring(L"   ") + T(L"[закреплён]");
         InsertTreeItem(root, t.c_str(), g_nodes[i].icon, (LPARAM)i, false);
@@ -519,6 +540,270 @@ static void MoveSelected(int dir) {
     }
 }
 
+// ===== Управление порядком узлов: ручной ввод индекса, черта-разделитель, перетаскивание =====
+
+static DWORD        s_sortIdxResult  = 0;
+static DWORD        s_sortIdxInitial = 0;
+static std::wstring s_sortIdxName;
+
+static INT_PTR CALLBACK SortIdxDlgProc(HWND dlg, UINT m, WPARAM w, LPARAM) {
+    switch (m) {
+    case WM_INITDIALOG: {
+        SetDlgItemInt(dlg, IDC_SORTIDX_EDIT, s_sortIdxInitial, FALSE);
+        wchar_t info[320];
+        swprintf_s(info, T(L"«%s»\r\n\r\nМеньше %u — над «Этот компьютер»;   %u…%u — между ним и Корзиной;   больше %u — под Корзиной."),
+                   s_sortIdxName.c_str(), (unsigned)kEffThisPC, (unsigned)kEffThisPC, (unsigned)kEffRecycle, (unsigned)kEffRecycle);
+        SetDlgItemTextW(dlg, IDC_SORTIDX_INFO, info);
+        SendDlgItemMessageW(dlg, IDC_SORTIDX_EDIT, EM_SETSEL, 0, -1);
+        SetFocus(GetDlgItem(dlg, IDC_SORTIDX_EDIT));
+        LocDialog(dlg);
+        return FALSE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(w) == IDOK) {
+            BOOL ok = FALSE; UINT v = GetDlgItemInt(dlg, IDC_SORTIDX_EDIT, &ok, FALSE);
+            if (!ok || v > 9999) { MessageBoxW(dlg, T(L"Введите целое число от 0 до 9999."), T(L"Индекс"), MB_OK|MB_ICONINFORMATION); return TRUE; }
+            s_sortIdxResult = v; EndDialog(dlg, IDOK); return TRUE;
+        }
+        if (LOWORD(w) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
+        break;
+    }
+    return FALSE;
+}
+
+static bool ShowSortIdxDialog(HWND parent, const std::wstring& name, DWORD initial, DWORD& out) {
+    s_sortIdxName = name; s_sortIdxInitial = initial;
+    if (DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SORTIDX), parent, SortIdxDlgProc, 0) == IDOK) {
+        out = s_sortIdxResult; return true;
+    }
+    return false;
+}
+
+// Записать пользовательскому узлу конкретный SortOrderIndex и перечитать дерево.
+static void ApplyUserIndex(int idx, DWORD index) {
+    if (idx < 0 || idx >= (int)g_nodes.size() || g_nodes[idx].isPin) return;
+    NsHive hive = g_nodes[idx].hive;
+    NsLocation loc = g_nodes[idx].location;
+    std::wstring guid = g_nodes[idx].guid;
+    std::wstring backup, err;
+    if (SetUserSortIndex(hive, guid, index, backup, err)) {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+        Populate();
+        SelectNodeByGuid(loc, guid);
+        if (!err.empty()) MessageBoxW(g_tree, err.c_str(), T(L"Внимание: права ключа не восстановлены"), MB_OK|MB_ICONWARNING);
+        SetStatus(T(L"Индекс изменён. Нажмите «Применить», чтобы увидеть результат."));
+    } else {
+        MessageBoxW(g_tree, err.c_str(), T(L"Не удалось задать индекс"), MB_OK|MB_ICONWARNING);
+    }
+}
+
+// Двойной клик: пользовательскому узлу — ввод индекса; системному — сообщение, что он фиксирован.
+static bool OnTreeDblClk(HWND h) {
+    HTREEITEM sel = TreeView_GetSelection(g_tree);
+    if (!sel) return false;
+    TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = sel; TreeView_GetItem(g_tree, &ti);
+    int idx = (int)ti.lParam;
+    if (idx < 0 || idx >= (int)g_nodes.size()) return false;
+    if (g_nodes[idx].isPin) {
+        wchar_t m[256];
+        swprintf_s(m, T(L"«%s» — системный узел, Проводник держит его на позиции %u. Порядок изменить нельзя."),
+                   T(g_nodes[idx].displayName.c_str()), (unsigned)g_nodes[idx].sortOrder);
+        MessageBoxW(h, m, T(L"Фиксированный узел"), MB_OK|MB_ICONINFORMATION);
+        return true;
+    }
+    if (g_nodes[idx].location != NsLocation::Desktop) return false;  // порядок задаём только в навигации
+    DWORD init = g_nodes[idx].hasSort ? g_nodes[idx].sortOrder : 50;
+    DWORD val = 0;
+    if (ShowSortIdxDialog(h, g_nodes[idx].displayName, init, val)) ApplyUserIndex(idx, val);
+    return true;
+}
+
+// Правый клик по узлу дерева: контекстное меню «Задать порядок (индекс)…» / «Удалить узел».
+static void OnTreeRClick(HWND h) {
+    POINT pt; GetCursorPos(&pt);
+    POINT cpt = pt; ScreenToClient(g_tree, &cpt);
+    TVHITTESTINFO ht{}; ht.pt = cpt;
+    HTREEITEM hit = TreeView_HitTest(g_tree, &ht);
+    if (!hit) return;
+    TreeView_SelectItem(g_tree, hit);
+    TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = hit; TreeView_GetItem(g_tree, &ti);
+    int idx = (int)ti.lParam;
+    if (idx < 0 || idx >= (int)g_nodes.size()) return;   // заголовок/разделитель — меню не показываем
+
+    HMENU menu = CreatePopupMenu();
+    if (!g_nodes[idx].isPin && g_nodes[idx].location == NsLocation::Desktop)
+        AppendMenuW(menu, MF_STRING, IDM_CTX_SORT, T(L"Задать порядок (индекс)…"));
+    AppendMenuW(menu, MF_STRING, IDC_BTN_DELETE, T(L"Удалить узел"));
+    int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, h, nullptr);
+    DestroyMenu(menu);
+    if (cmd == IDM_CTX_SORT) {
+        DWORD init = g_nodes[idx].hasSort ? g_nodes[idx].sortOrder : 50;
+        DWORD val = 0;
+        if (ShowSortIdxDialog(h, g_nodes[idx].displayName, init, val)) ApplyUserIndex(idx, val);
+    } else if (cmd == IDC_BTN_DELETE) {
+        SendMessageW(h, WM_COMMAND, MAKEWPARAM(IDC_BTN_DELETE, 0), 0);
+    }
+}
+
+// Черты зон: импровизированная полоса Проводника (~70, пунктир) над первым узлом с индексом ≥70,
+// и якорные сплошные над «Этот компьютер»/«Корзиной» с подписью зоны справа (прозрачный фон).
+static LRESULT TreeCustomDraw(LPNMTVCUSTOMDRAW cd) {
+    switch (cd->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT:     return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: return CDRF_NOTIFYPOSTPAINT;
+    case CDDS_ITEMPOSTPAINT: {
+        HTREEITEM hItem = (HTREEITEM)cd->nmcd.dwItemSpec;
+        TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = hItem;
+        if (!TreeView_GetItem(g_tree, &ti)) return CDRF_DODEFAULT;
+        int idx = (int)ti.lParam;
+        RECT rc; if (!TreeView_GetItemRect(g_tree, hItem, &rc, FALSE)) return CDRF_DODEFAULT;
+        RECT cr; GetClientRect(g_tree, &cr);
+        HDC hdc = cd->nmcd.hdc;
+        HGDIOBJ oldF = g_font ? SelectObject(hdc, g_font) : nullptr;
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, GetSysColor(COLOR_GRAYTEXT));
+
+        // пустая строка-место (lParam == -2): импровизированная полоса Проводника ~70 в собственной
+        // строке (вставлена на границе индекса kBarHint) — пунктир по центру + текст справа.
+        if (idx == -2) {
+            int my = (rc.top + rc.bottom) / 2;
+            RECT rcTx; TreeView_GetItemRect(g_tree, hItem, &rcTx, TRUE);    // текстовая часть — начинается после иконки
+            wchar_t m[160]; swprintf_s(m, T(L"≈ полоса Проводника (~%u) — поймай сортировкой"), (unsigned)kBarHint);
+            SIZE sz{}; GetTextExtentPoint32W(hdc, m, lstrlenW(m), &sz);
+            int tx = cr.right - 12 - sz.cx;                 // текст справа
+            HPEN pen = CreatePen(PS_DOT, 1, GetSysColor(COLOR_GRAYTEXT));
+            HGDIOBJ op = SelectObject(hdc, pen);
+            MoveToEx(hdc, rcTx.left, my, nullptr); LineTo(hdc, tx - 8, my);  // от после иконки до перед текстом — не задевает ни иконку, ни текст
+            SelectObject(hdc, op); DeleteObject(pen);
+            TextOutW(hdc, tx, my - sz.cy / 2, m, lstrlenW(m));
+            if (oldF) SelectObject(hdc, oldF);
+            return CDRF_DODEFAULT;
+        }
+        if (idx < 0 || idx >= (int)g_nodes.size()) { if (oldF) SelectObject(hdc, oldF); return CDRF_DODEFAULT; }
+
+        // якорные сплошные черты зон + подпись справа (для «Этот компьютер» и «Корзины»)
+        if (g_nodes[idx].isPin) {
+            bool isBin = (lstrcmpiW(g_nodes[idx].guid.c_str(), kGuidRecycleBin) == 0);
+            wchar_t m[200];
+            if (isBin) swprintf_s(m, T(L"↑ между ПК и Корзиной: %u-%u      ↓ под Корзиной: больше %u"),
+                                  (unsigned)kEffThisPC, (unsigned)kEffRecycle, (unsigned)kEffRecycle);
+            else       swprintf_s(m, T(L"↑ над «Этот компьютер»: меньше %u"), (unsigned)kEffThisPC);
+            SIZE sz{}; GetTextExtentPoint32W(hdc, m, lstrlenW(m), &sz);
+            int tx = cr.right - 12 - sz.cx;
+            int my = (rc.top + rc.bottom) / 2;
+            RECT rcTx; TreeView_GetItemRect(g_tree, hItem, &rcTx, TRUE);     // конец текста узла («Этот компьютер · #80 …»)
+            HPEN pen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_GRAYTEXT));
+            HGDIOBJ op = SelectObject(hdc, pen);
+            MoveToEx(hdc, rcTx.right + 10, my, nullptr); LineTo(hdc, tx - 8, my);  // по центру строки, между именем узла и подписью зоны
+            SelectObject(hdc, op); DeleteObject(pen);
+            TextOutW(hdc, tx, my - sz.cy / 2, m, lstrlenW(m));
+        }
+
+        if (oldF) SelectObject(hdc, oldF);
+        return CDRF_DODEFAULT;
+    }
+    }
+    return CDRF_DODEFAULT;
+}
+
+// ---- Перетаскивание пользовательских узлов между зонами ----
+static bool       g_dragging = false;
+static int        g_dragIdx  = -1;
+static HIMAGELIST g_dragImg  = nullptr;
+
+static void OnBeginDrag(HWND h, LPNMTREEVIEWW tv) {
+    int idx = (int)tv->itemNew.lParam;
+    if (idx < 0 || idx >= (int)g_nodes.size()) return;
+    if (g_nodes[idx].isPin || g_nodes[idx].location != NsLocation::Desktop) return;  // системные/заголовки не таскаем
+    g_dragImg = TreeView_CreateDragImage(g_tree, tv->itemNew.hItem);
+    if (!g_dragImg) return;
+    g_dragIdx  = idx;
+    g_dragging = true;
+    ImageList_BeginDrag(g_dragImg, 0, 0, 0);
+    POINT pt = tv->ptDrag; ClientToScreen(g_tree, &pt);
+    ImageList_DragEnter(nullptr, pt.x, pt.y);
+    SetCapture(h);
+}
+
+static void OnDragMove(HWND h, int cx, int cy) {
+    if (!g_dragging) return;
+    POINT screen = { cx, cy }; ClientToScreen(h, &screen);
+    ImageList_DragMove(screen.x, screen.y);
+    POINT inTree = screen; ScreenToClient(g_tree, &inTree);
+    TVHITTESTINFO ht{}; ht.pt = inTree;
+    HTREEITEM tgt = TreeView_HitTest(g_tree, &ht);
+    ImageList_DragShowNolock(FALSE);
+    TreeView_SelectDropTarget(g_tree, tgt);
+    ImageList_DragShowNolock(TRUE);
+}
+
+// Найти элемент дерева по его lParam (индексу узла) — для краевых drop'ов мимо узлов.
+static HTREEITEM FindNavItem(int idx) {
+    for (HTREEITEM root = TreeView_GetRoot(g_tree); root; root = TreeView_GetNextSibling(g_tree, root))
+        for (HTREEITEM c = TreeView_GetChild(g_tree, root); c; c = TreeView_GetNextSibling(g_tree, c)) {
+            TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = c; TreeView_GetItem(g_tree, &ti);
+            if ((int)ti.lParam == idx) return c;
+        }
+    return nullptr;
+}
+
+static void OnDragEnd(HWND h, int cx, int cy) {
+    if (!g_dragging) return;
+    g_dragging = false;
+    ImageList_DragLeave(nullptr);
+    ImageList_EndDrag();
+    ReleaseCapture();
+    if (g_dragImg) { ImageList_Destroy(g_dragImg); g_dragImg = nullptr; }
+    TreeView_SelectDropTarget(g_tree, nullptr);
+
+    int dragIdx = g_dragIdx; g_dragIdx = -1;
+    if (dragIdx < 0) return;
+    POINT screen = { cx, cy }; ClientToScreen(h, &screen);
+    POINT inTree = screen; ScreenToClient(g_tree, &inTree);
+
+    std::vector<int> vis;
+    for (int i : SectionOrder(NsLocation::Desktop)) if (IsVisibleTreeNode(i)) vis.push_back(i);
+    if (vis.empty()) return;
+
+    // позиции якорей в дереве: «Этот компьютер» и «Корзина» задают границы трёх зон
+    int pcIdx = -1, binIdx = -1;
+    for (int v : vis) {
+        if      (lstrcmpiW(g_nodes[v].guid.c_str(), kGuidThisPC)     == 0) pcIdx  = v;
+        else if (lstrcmpiW(g_nodes[v].guid.c_str(), kGuidRecycleBin) == 0) binIdx = v;
+    }
+    HTREEITEM hiFirst = FindNavItem(vis.front());
+    HTREEITEM hiPc    = (pcIdx  >= 0) ? FindNavItem(pcIdx)  : nullptr;
+    HTREEITEM hiBin   = (binIdx >= 0) ? FindNavItem(binIdx) : nullptr;
+    RECT rcFirst{}, rcPc{}, rcBin{};
+    if (hiFirst) TreeView_GetItemRect(g_tree, hiFirst, &rcFirst, FALSE);
+    if (hiPc)    TreeView_GetItemRect(g_tree, hiPc,  &rcPc,  FALSE);
+    if (hiBin)   TreeView_GetItemRect(g_tree, hiBin, &rcBin, FALSE);
+
+    // линейная интерполяция координаты Y → индекс в диапазоне зоны
+    auto lerp = [](int y, int y0, int y1, DWORD v0, DWORD v1) -> DWORD {
+        if (y1 <= y0) return v0;
+        double t = double(y - y0) / double(y1 - y0);
+        if (t < 0) t = 0; if (t > 1) t = 1;
+        return (DWORD)((double)v0 + t * ((double)v1 - (double)v0) + 0.5);
+    };
+
+    int dy = inTree.y;
+    DWORD newIndex;
+    if (hiPc && dy < rcPc.top) {
+        // зона над «Этот компьютер»: 1..78 (выше = меньше; у самого верха ~1, у черты ~78)
+        newIndex = lerp(dy, rcFirst.top, rcPc.top, 1, kEffThisPC - 2);
+    } else if (hiBin && dy < rcBin.top) {
+        // зона между ПК и Корзиной: 81..119
+        int y0 = hiPc ? rcPc.bottom : rcFirst.top;
+        newIndex = lerp(dy, y0, rcBin.top, kEffThisPC + 1, kEffRecycle - 1);
+    } else {
+        // зона под Корзиной: 121..200 (ниже = больше)
+        int y0 = hiBin ? rcBin.bottom : (hiPc ? rcPc.bottom : rcFirst.top);
+        newIndex = lerp(dy, y0, y0 + 200, kEffRecycle + 1, kEffRecycle + 80);
+    }
+    ApplyUserIndex(dragIdx, newIndex);
+}
+
 static HRESULT CALLBACK AboutCallback(HWND, UINT msg, WPARAM, LPARAM l, LONG_PTR) {
     if (msg == TDN_HYPERLINK_CLICKED) {
         wchar_t dir[MAX_PATH] = L"";
@@ -607,6 +892,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_NOTIFY: {
         LPNMHDR nh = (LPNMHDR)l;
         if (nh->idFrom == (UINT_PTR)IDC_TREE) {
+            if (nh->code == NM_CUSTOMDRAW)  return TreeCustomDraw((LPNMTVCUSTOMDRAW)l);
+            if (nh->code == NM_DBLCLK)      { if (OnTreeDblClk(h)) return 1; return 0; }
+            if (nh->code == NM_RCLICK)      { OnTreeRClick(h); return 1; }
+            if (nh->code == TVN_BEGINDRAGW) { OnBeginDrag(h, (LPNMTREEVIEWW)l); return 0; }
             if (nh->code == TVN_SELCHANGEDW) {
                 LPNMTREEVIEWW tv = (LPNMTREEVIEWW)l;
                 ShowDetails((int)tv->itemNew.lParam);
@@ -623,6 +912,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     }
+    case WM_MOUSEMOVE:
+        if (g_dragging) { OnDragMove(h, (short)LOWORD(l), (short)HIWORD(l)); return 0; }
+        break;
+    case WM_LBUTTONUP:
+        if (g_dragging) { OnDragEnd(h, (short)LOWORD(l), (short)HIWORD(l)); return 0; }
+        break;
     case WM_COMMAND:
         // готовые команды-инструменты (таблица kCommands) — toggle узла в «Этот компьютер»
         for (const auto& c : kCommands)
@@ -869,6 +1164,22 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int show) {
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,CW_USEDEFAULT, 960,640,
         nullptr,nullptr,hi,nullptr);
     ShowWindow(h, show); UpdateWindow(h);
+    // Процесс стартует с requireAdministrator (после UAC) и часто не выходит на передний план —
+    // окно лишь моргает в панели задач. Принудительно поднимаем его наверх и отдаём фокус: короткий
+    // flip TOPMOST + AttachThreadInput к текущему foreground-потоку (обходит блокировку смены фокуса
+    // для не-foreground процесса).
+    SetWindowPos(h, HWND_TOPMOST,   0,0,0,0, SWP_NOMOVE|SWP_NOSIZE);
+    SetWindowPos(h, HWND_NOTOPMOST, 0,0,0,0, SWP_NOMOVE|SWP_NOSIZE);
+    {
+        HWND  fg    = GetForegroundWindow();
+        DWORD fgTid = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+        DWORD myTid = GetCurrentThreadId();
+        if (fgTid && fgTid != myTid) AttachThreadInput(fgTid, myTid, TRUE);
+        BringWindowToTop(h);
+        SetForegroundWindow(h);
+        SetActiveWindow(h);
+        if (fgTid && fgTid != myTid) AttachThreadInput(fgTid, myTid, FALSE);
+    }
     MSG msg; while (GetMessageW(&msg,nullptr,0,0)){ TranslateMessage(&msg); DispatchMessageW(&msg);}
     CoUninitialize(); return 0;
 }

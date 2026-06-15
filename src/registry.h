@@ -58,6 +58,11 @@ struct SortItem { NsHive hive; std::wstring guid; };
 // не удалось (предупреждение для UI, повторять не нужно).
 bool SetSortOrder(const std::vector<SortItem>& itemsInOrder, std::wstring& backupPath, std::wstring& err);
 
+// Записать конкретный SortOrderIndex одному узлу (ручной ввод / drag-drop). HKCU — напрямую,
+// HKLM — со сменой владельца CLSID-ключа. Перед записью .reg-бэкап (sortidx_before.reg).
+bool SetUserSortIndex(NsHive hive, const std::wstring& guid, DWORD index,
+                      std::wstring& backupPath, std::wstring& err);
+
 // Режим «показать все папки» в дереве навигации (HKCU\...\Advanced\NavPaneShowAllFolders).
 bool GetNavAllFolders();
 bool SetNavAllFolders(bool on);
